@@ -1,3 +1,5 @@
+Latest release: Engineering Studio 0.3 — 113/113 tests and focused browser checks; see [studio-0.3.md](studio-0.3.md). Earlier evidence below is retained as version history.
+
 # Verification record
 
 Date: 21 November 2026 (Asia/Bangkok)
