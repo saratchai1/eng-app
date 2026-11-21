@@ -1,6 +1,6 @@
 import { escapeHTML as e } from './utils.js';
 
-const STYLE_FILES = ['styles', 'specials', 'workflows', 'refinements', 'studio', 'sensitivity', 'document-control', 'technical-diagrams', 'design-options', 'report-reader', 'review-register', 'revisions', 'review-workspace'];
+const STYLE_FILES = ['styles', 'specials', 'workflows', 'refinements', 'studio', 'sensitivity', 'document-control', 'technical-diagrams', 'design-options', 'report-reader', 'review-register', 'revisions', 'review-workspace', 'handover'];
 
 /** Headings come from the application's escaped report renderers, not imported HTML. */
 export function indexReportContent(content, ownerDocument = document) {
