@@ -1,6 +1,6 @@
 import { escapeHTML as e } from './utils.js';
 
-const STYLE_FILES = ['styles', 'specials', 'workflows', 'refinements', 'studio', 'sensitivity', 'document-control', 'technical-diagrams', 'design-options', 'report-reader', 'review-register', 'revisions', 'review-workspace', 'handover'];
+const STYLE_FILES = ['styles', 'specials', 'workflows', 'refinements', 'studio', 'sensitivity', 'document-control', 'technical-diagrams', 'design-options', 'report-reader', 'review-register', 'revisions', 'review-workspace', 'handover', 'handover-history'];
 
 /** Headings come from the application's escaped report renderers, not imported HTML. */
 export function indexReportContent(content, ownerDocument = document) {
@@ -27,7 +27,7 @@ export function indexReportContent(content, ownerDocument = document) {
 }
 
 export function reportNavigationMarkup(sections) {
-  return `<aside class="report-index" aria-label="สารบัญรายงาน"><div class="report-index-label"><span>DOCUMENT MAP</span><strong>สารบัญรายงาน</strong></div><nav>${sections.map((section, index) => `<button type="button" class="report-index-link level-${section.level}" data-report-section="${e(section.id)}"${index === 0 ? ' aria-current="location"' : ''}><span>${String(index + 1).padStart(2, '0')}</span>${e(section.label)}</button>`).join('')}</nav><p>ผลคำนวณและข้อมูลเอกสาร<br>จากงานชุดปัจจุบัน</p></aside><label class="report-mobile-index"><span>ไปยังส่วนของรายงาน</span><select aria-label="ไปยังส่วนของรายงาน">${sections.map(section => `<option value="${e(section.id)}">${e(section.label)}</option>`).join('')}</select></label>`;
+  return `<aside class="report-index" aria-label="สารบัญรายงาน"><div class="report-index-label"><span>DOCUMENT MAP</span><strong>สารบัญรายงาน</strong></div><nav>${sections.map((section, index) => `<button type="button" class="report-index-link level-${section.level}" data-report-section="${e(section.id)}"${index === 0 ? ' aria-current="location"' : ''}><span>${String(index + 1).padStart(2, '0')}</span>${e(section.label)}</button>`).join('')}</nav><p>ผลคำนวณและข้อมูลเอกสาร<br>ตามข้อมูลและเวลาที่ระบุ</p></aside><label class="report-mobile-index"><span>ไปยังส่วนของรายงาน</span><select aria-label="ไปยังส่วนของรายงาน">${sections.map(section => `<option value="${e(section.id)}">${e(section.label)}</option>`).join('')}</select></label>`;
 }
 
 export function mountReportReader(modal) {
