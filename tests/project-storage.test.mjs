@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { LEGACY_DRAFT_KEY, legacyToolDraftKey, draftStorageKey, draftPointerKey, normalizeDraft, makeDraftRecord, resolveProjectForTool, persistJSON, readToolDraft, persistToolDraft, removeToolDraft } from '../src/project-storage.js';
+import { LEGACY_DRAFT_KEY, legacyToolDraftKey, draftStorageKey, draftPointerKey, normalizeDraft, makeDraftRecord, resolveProjectForTool, persistJSON, readToolDraft, persistToolDraft, removeToolDraft, persistToolPointer, finalizeSavedDraft, removeOwnedDraft } from '../src/project-storage.js';
 
 const createdAt = '2026-11-21T08:00:00.000Z';
 const savedAt = '2026-11-21T08:01:00.000Z';
@@ -10,6 +10,37 @@ const memoryStorage = () => {
   const items = new Map();
   return { getItem: key => items.get(key) ?? null, setItem: (key, value) => items.set(key, value), removeItem: key => items.delete(key) };
 };
+
+test('saving an unsaved project removes redundant image-heavy drafts after durable save', () => {
+  const storage = memoryStorage();
+  const unsaved = makeDraftRecord({ ...savedProject, id: null }, editedAt);
+  persistToolDraft(storage, unsaved);
+  persistJSON(storage, 'projects', [savedProject]);
+  assert.equal(finalizeSavedDraft(storage, savedProject, null), true);
+  assert.equal(storage.getItem(draftStorageKey('rc-beam', null)), null);
+  assert.equal(storage.getItem(draftStorageKey('rc-beam', 'project-a')), null);
+  const recovered = readToolDraft(storage, 'rc-beam', undefined, [savedProject]);
+  assert.equal(recovered.id, 'project-a');
+  assert.equal(recovered.data.mu, 100);
+});
+
+test('clean saved projects resume from a small pointer without duplicating the project payload', () => {
+  const storage = memoryStorage();
+  assert.ok(persistToolPointer(storage, 'rc-beam', savedProject.id));
+  assert.equal(readToolDraft(storage, 'rc-beam', undefined, [savedProject]).id, savedProject.id);
+  assert.equal(readToolDraft(storage, 'rc-beam', 'other', [savedProject]), null);
+  assert.equal(readToolDraft(storage, 'rc-beam', undefined, []), null);
+});
+
+test('saving one identity preserves the drafts of another saved project and unsaved work', () => {
+  const storage = memoryStorage();
+  persistToolDraft(storage, makeDraftRecord({ ...savedProject, data: { mu: 120 } }, editedAt));
+  persistToolDraft(storage, makeDraftRecord({ ...savedProject, id: 'project-b', data: { mu: 140 } }, editedAt));
+  persistToolDraft(storage, makeDraftRecord({ ...savedProject, id: null, data: { mu: 160 } }, editedAt));
+  assert.ok(finalizeSavedDraft(storage, savedProject, savedProject.id));
+  assert.equal(readToolDraft(storage, 'rc-beam', 'project-b').data.mu, 140);
+  assert.equal(readToolDraft(storage, 'rc-beam', null).data.mu, 160);
+});
 
 test('refreshing an edited saved project preserves its identity and original creation date', () => {
   const draft = makeDraftRecord({ ...savedProject, name: 'Beam A revised', data: { mu: 120 } }, editedAt);
@@ -131,4 +162,75 @@ test('malformed or wrong-tool drafts are rejected, and legacy drafts safely reco
   const legacy = { schemaVersion: 1, toolId: 'rc-beam', name: 'Old draft', updatedAt: editedAt, data: { mu: 25 } };
   const recovered = resolveProjectForTool('rc-beam', { draft: legacy, saved: [savedProject], now: editedAt });
   assert.equal(recovered.project.id, null); assert.equal(recovered.project.data.mu, 25);
+});
+
+test('a stale-base draft cannot shadow an explicitly opened saved version but resumes as an unsaved fork', () => {
+  const newer = { ...savedProject, updatedAt: '2026-11-21T08:03:00.000Z', data: { mu: 200 } };
+  const draft = makeDraftRecord({ ...savedProject, data: { mu: 100 }, writerId: 'stale-tab', baseSavedAt: savedAt }, '2026-11-21T08:04:00.000Z');
+  const explicit = resolveProjectForTool('rc-beam', { project: savedProject, draft, saved: [newer] });
+  assert.equal(explicit.project.data.mu, 200);
+  assert.equal(explicit.project.id, savedProject.id);
+  assert.equal(explicit.fromDraft, false);
+  const resumed = resolveProjectForTool('rc-beam', { draft, saved: [newer], now: '2026-11-21T08:05:00.000Z' });
+  assert.equal(resumed.project.data.mu, 100);
+  assert.equal(resumed.project.id, null);
+  assert.equal(resumed.project.baseSavedAt, null);
+  assert.equal(resumed.project.writerId, 'stale-tab');
+  assert.equal(resumed.project.createdAt, '2026-11-21T08:05:00.000Z');
+  assert.match(resumed.project.name, /ร่างจากงานรุ่นก่อน/);
+  assert.equal(resumed.fromDraft, true);
+  const validDraft = { ...draft, baseSavedAt: newer.updatedAt };
+  const matching = resolveProjectForTool('rc-beam', { project: newer, draft: validDraft, saved: [newer] });
+  assert.equal(matching.project.data.mu, 100);
+  assert.equal(matching.project.writerId, 'stale-tab');
+  assert.equal(matching.project.baseSavedAt, newer.updatedAt);
+});
+
+test('conflict promotion removes its own older autosave even when latest edits are still pending', () => {
+  const storage = memoryStorage();
+  const original = { ...savedProject, updatedAt: '2026-11-21T08:03:00.000Z', data: { mu: 200 } };
+  const autosaved = makeDraftRecord({ ...savedProject, data: { mu: 100 }, writerId: 'tab-a', baseSavedAt: savedAt }, '2026-11-21T08:04:00.000Z');
+  persistToolDraft(storage, autosaved);
+  // 110 was typed after autosave; promotion must not rely on equal payloads.
+  const copy = { ...original, id: 'copy-b', createdAt: '2026-11-21T08:05:00.000Z', updatedAt: '2026-11-21T08:05:00.000Z', data: { mu: 110 } };
+  const records = [copy, original];
+  persistJSON(storage, 'projects', records);
+  assert.ok(removeOwnedDraft(storage, 'rc-beam', original.id, { writerId: 'tab-a' }));
+  assert.ok(finalizeSavedDraft(storage, copy));
+  assert.equal(storage.getItem(draftStorageKey('rc-beam', original.id)), null);
+  const reopened = resolveProjectForTool('rc-beam', { project: original, draft: readToolDraft(storage, 'rc-beam', original.id, records), saved: records });
+  assert.equal(reopened.project.data.mu, 200);
+  assert.equal(readToolDraft(storage, 'rc-beam', undefined, records).data.mu, 110);
+});
+
+test('adopted drafts including legacy writerless records are removed only by their exact writer and timestamp', () => {
+  for (const resumedWriterId of [null, 'old-tab']) {
+    const storage = memoryStorage();
+    const adopted = makeDraftRecord({ ...savedProject, writerId: resumedWriterId, baseSavedAt: savedAt }, editedAt);
+    if (resumedWriterId === null) { delete adopted.writerId; delete adopted.baseSavedAt; }
+    const key = resumedWriterId === null ? LEGACY_DRAFT_KEY : draftStorageKey('rc-beam', savedProject.id);
+    persistJSON(storage, key, adopted);
+    persistToolPointer(storage, 'rc-beam', savedProject.id);
+    assert.ok(removeOwnedDraft(storage, 'rc-beam', savedProject.id, { writerId: 'new-tab', resumedWriterId, resumedUpdatedAt: editedAt }));
+    assert.equal(storage.getItem(key), null);
+    assert.equal(storage.getItem(draftPointerKey('rc-beam')), null);
+  }
+});
+
+test('owned cleanup preserves another writer’s later work and unrelated drafts, and reports storage denial', () => {
+  const storage = memoryStorage();
+  const laterAt = '2026-11-21T08:06:00.000Z';
+  const newer = makeDraftRecord({ ...savedProject, writerId: 'other-tab', baseSavedAt: savedAt, data: { mu: 250 } }, laterAt);
+  persistToolDraft(storage, newer);
+  persistJSON(storage, LEGACY_DRAFT_KEY, makeDraftRecord({ ...savedProject, writerId: 'this-tab' }, editedAt));
+  const unsaved = makeDraftRecord({ ...savedProject, id: null, writerId: 'this-tab', data: { mu: 300 } }, editedAt);
+  persistJSON(storage, draftStorageKey('rc-beam', null), unsaved);
+  assert.ok(removeOwnedDraft(storage, 'rc-beam', savedProject.id, { writerId: 'this-tab', resumedWriterId: 'other-tab', resumedUpdatedAt: editedAt }));
+  assert.equal(readToolDraft(storage, 'rc-beam').data.mu, 250);
+  assert.equal(readToolDraft(storage, 'rc-beam', null).data.mu, 300);
+  assert.equal(storage.getItem(LEGACY_DRAFT_KEY), null);
+  // Equal timestamps still do not authorize deleting a different writer.
+  assert.ok(removeOwnedDraft(storage, 'rc-beam', savedProject.id, { writerId: 'this-tab', resumedWriterId: 'third-tab', resumedUpdatedAt: laterAt }));
+  assert.equal(readToolDraft(storage, 'rc-beam').writerId, 'other-tab');
+  assert.equal(removeOwnedDraft({ getItem() { throw new Error('denied'); } }, 'rc-beam', savedProject.id, { writerId: 'this-tab' }), false);
 });

@@ -2,7 +2,7 @@
 
 Date: 21 November 2026 (Asia/Bangkok)
 
-Release checks: `npm run check` passed; `npm test` passed all 55 tests; `npm run build` produced the static application in `dist/`.
+Initial release checks passed 55 tests. The second review expands the suite to 89 tests; its release commands and UI checks are recorded in [review-0.2.md](review-0.2.md).
 
 ## Numerical and workflow checks
 

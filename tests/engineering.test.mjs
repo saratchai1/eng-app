@@ -142,6 +142,71 @@ test('retaining-wall geometry and water bounds reject impossible input', () => {
   assert.throws(() => retainingWallModel({ gammaSat: 17, gammaDry: 18 }), /อิ่มน้ำ/);
 });
 
+test('independent vertical heel surcharge adds its actual force and lever arm without changing lateral pressure', () => {
+  const p = { height: 1, width: 6, toe: 0.6, stem: 0.3, base: 0.4, surcharge: 100, allowable: 100 };
+  const unloaded = retainingWallModel(p);
+  const loaded = retainingWallModel({ ...p, heelSurcharge: 100 });
+  const force = 100 * (6 - 0.6 - 0.3);
+  const x = 0.6 + 0.3 + (6 - 0.6 - 0.3) / 2;
+  near(loaded.weight - unloaded.weight, force);
+  near(loaded.weightMoment - unloaded.weightMoment, force * x);
+  near(loaded.lateral, unloaded.lateral);
+  near(loaded.weightX * loaded.weight, loaded.weightMoment);
+  near(loaded.contact.qmax, 147.6332222222222);
+  assert.ok(unloaded.contact.qmax < 100);
+  assert.ok(loaded.contact.qmax > 100);
+  const report = engineeringTools['retaining-wall'].calculate({ ...p, heelSurcharge: 100 });
+  assert.equal(report.checks.find(c => c.label === 'หน่วยแรงดินไม่เกินค่าที่กรอก').pass, false);
+  assert.match(report.checks.find(c => c.label === 'หน่วยแรงดินไม่เกินค่าที่กรอก').detail, />/);
+  // Pressure integrates to the actual N and M after adding the heel load.
+  near((loaded.contact.qmax + loaded.contact.qmin) / 2 * loaded.width, loaded.normal);
+  near((loaded.contact.qmax - loaded.contact.qmin) * loaded.width ** 2 / 12, loaded.normal * Math.abs(loaded.signedE));
+});
+
+test('uplift cannot show an apparently passing overturning ratio when no compressive base force exists', () => {
+  const p = { height: 15, width: 19, toe: 15, stem: 3, base: 0.1, phi: 45, surcharge: 0 };
+  const dry = retainingWallModel(p);
+  const upliftToe = 2 * 1.01 * dry.weight / (9.81 * p.width);
+  const v = retainingWallModel({ ...p, upliftToe });
+  assert.ok(v.normal < 0);
+  // This real former false-green case has a raw moment ratio above the FS target.
+  assert.ok(v.weightMoment / v.overturnMoment > 2);
+  assert.equal(v.overturning, null);
+  assert.equal(v.sliding, null);
+  const report = engineeringTools['retaining-wall'].calculate({ ...p, upliftToe });
+  assert.equal(report.summary[0].tone, 'warn');
+  assert.equal(report.summary[1].tone, 'warn');
+  assert.equal(report.checks[0].pass, false);
+  assert.equal(report.checks[1].pass, null);
+  assert.equal(report.checks[2].pass, null);
+  assert.equal(report.checks.find(c => c.label === 'หน่วยแรงดินไม่เกินค่าที่กรอก').pass, null);
+});
+
+test('failed reports display the actual comparison direction and unassessed bearing is not a numeric pass', () => {
+  const beam = engineeringTools['rc-beam'].calculate({ mu: 1000 });
+  assert.equal(beam.checks[1].pass, false);
+  assert.match(beam.checks[1].detail, / < /);
+  const footing = engineeringTools.footing.calculate({ allowable: 100 });
+  assert.equal(footing.checks[2].pass, false);
+  assert.match(footing.checks[2].detail, />/);
+  const unstable = engineeringTools.footing.calculate({ moment: 600 });
+  assert.equal(unstable.checks[0].pass, false);
+  assert.equal(unstable.checks[2].pass, null);
+  const shoring = engineeringTools.shoring.calculate({ capacity: 1, allowable: 1 });
+  for (const check of shoring.checks) {
+    assert.equal(check.pass, false);
+    assert.match(check.detail, />/);
+  }
+});
+
+test('near-limit failures remain distinguishable after report formatting', () => {
+  const r = engineeringTools.footing.calculate({ normal: 600.000001, moment: 0, width: 2, length: 2, allowable: 150 });
+  const check = r.checks.find(c => c.label === 'หน่วยแรงสูงสุดไม่เกินค่าที่กรอก');
+  assert.equal(check.pass, false);
+  assert.ok(check.detail.includes(String(600.000001 / 4)));
+  assert.doesNotMatch(check.detail, /150\.00 > 150\.00/);
+});
+
 test('RC beam agrees with independently checked 300 × 500 mm, 4-D20 benchmark', () => {
   const v = beamModel({ b: 300, d: 500, fc: 28, fy: 400, diameter: 20, count: 4, mu: 150 });
   near(v.steelArea, 1256.6370614359173);

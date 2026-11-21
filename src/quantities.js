@@ -18,18 +18,29 @@ export function roadQuantity(p) {
  return {area:L*W,base:L*W*base,subbase:L*W*sub,surface:L*W*surface,asphaltMass:L*W*surface*density,looseBase:L*W*base*loose};
 }
 export function canalQuantity(p) {
- const b=n(p.bottom,'กว้างท้องคลอง',{min:.01,max:1000}),d=n(p.depth,'ความลึก',{min:.01,max:100}),z=n(p.slope,'ลาดข้าง z:1',{min:0,max:10}),L=n(p.length,'ความยาว',{min:.01,max:100000}),t=n(p.thickness,'ความหนาดาด',{min:0,max:1});
- const A=b*d+z*d*d,P=b+2*d*Math.sqrt(1+z*z);
- return {area:A,top:b+2*z*d,excavation:A*L,liningArea:P*L,concrete:P*L*t};
+ const b=n(p.bottom,'กว้างท้องคลองด้านใน',{min:.01,max:1000}),d=n(p.depth,'ความลึกด้านในถึงขอบบน',{min:.01,max:100}),z=n(p.slope,'ลาดข้าง z:1',{min:0,max:10}),L=n(p.length,'ความยาว',{min:.01,max:100000}),t=n(p.thickness,'ความหนาดาดตั้งฉากผิว',{min:0,max:1});
+ const slopeLength=Math.hypot(1,z),A=b*d+z*d*d,P=b+2*d*slopeLength;
+ // Uniform normal offset on both sloping faces and a vertical bottom offset.
+ // Side/bottom faces meet at their intersections; the top is cut horizontally.
+ // Calculate concrete directly to avoid subtracting near-equal large areas.
+ const cornerArea=t*t*(2*slopeLength-z),concreteArea=P*t+cornerArea;
+ const outerBottom=b+2*t*(slopeLength-z),top=b+2*z*d,outerTop=top+2*t*slopeLength,outerDepth=d+t;
+ const outerArea=A+concreteArea;
+ return {area:A,top,perimeter:P,channelVolume:A*L,outerBottom,outerTop,outerDepth,outerArea,excavation:outerArea*L,liningArea:P*L,concreteArea,cornerArea,concrete:concreteArea*L,thinApproximation:P*L*t};
 }
 export function weightedIndex(p) {
  const w=['fixed','labor','cement','steel'].map(k=>n(p[k],`น้ำหนัก ${k}`,{min:0,max:1}));
- if(Math.abs(w.reduce((a,b)=>a+b,0)-1)>1e-8)throw new Error('ผลรวมน้ำหนักคงที่ + แรงงาน + ปูน + เหล็ก ต้องเท่ากับ 1.000');
+ const weightSum=w.reduce((a,b)=>a+b,0);
+ // Only accommodate binary floating-point roundoff, not a genuine weight gap.
+ // A 1e-8 gap would otherwise create a 10,000 THB change on a 1e12 THB job.
+ if(Math.abs(weightSum-1)>16*Number.EPSILON)throw new Error('ผลรวมน้ำหนักคงที่ + แรงงาน + ปูน + เหล็ก ต้องเท่ากับ 1.000');
  const names=['labor','cement','steel'];
- const ratios=names.map(k=>n(p[k+'Now'],`ดัชนีปัจจุบัน ${k}`,{min:.001,max:1000000})/n(p[k+'Base'],`ดัชนีฐาน ${k}`,{min:.001,max:1000000}));
- const K=w[0]+ratios.reduce((sum,r,i)=>sum+w[i+1]*r,0);
+ const indices=names.map(k=>({now:n(p[k+'Now'],`ดัชนีปัจจุบัน ${k}`,{min:.001,max:1000000}),base:n(p[k+'Base'],`ดัชนีฐาน ${k}`,{min:.001,max:1000000})}));
+ const ratios=indices.map(index=>index.now/index.base);
+ const change=indices.reduce((sum,index,i)=>sum+w[i+1]*(index.now-index.base)/index.base,0);
+ const K=change===0?1:w[0]+ratios.reduce((sum,r,i)=>sum+w[i+1]*r,0);
  const amount=n(p.amount,'มูลค่างาน',{min:0,max:1e12});
- return {K,ratios,adjusted:amount*K,difference:amount*(K-1)};
+ return {K,ratios,weightSum,change,adjusted:amount*K,difference:amount*change};
 }
 
 export const quantityTools={
@@ -37,7 +48,7 @@ export const quantityTools={
   id:'quantity-building',title:'ถอดปริมาณงานอาคาร',description:'ปริมาณเรขาคณิตของชิ้นส่วนหน้าตัดคงที่',
   inputGroups:[group('ชนิดและขนาด',[{key:'element',label:'ชนิดชิ้นส่วน',type:'select',default:'beam',options:[{value:'beam',label:'คาน — แบบท้องและสองข้าง'},{value:'column',label:'เสา — แบบสี่ด้าน'},{value:'slab',label:'พื้น — แบบท้องพื้น'}]},field('length','ความยาว / ความสูง','ม.',6,.01,1000),field('width','ความกว้าง','ม.',.3,.01,1000),field('depth','ความลึก / ความหนา','ม.',.6,.01,100),field('count','จำนวนชิ้น','ชิ้น',4,1,100000,1)]),group('ประมาณการวัสดุ',[field('steelRatio','อัตราเหล็กประมาณการ','กก./ลบ.ม.',120,0,1000,1),field('allowance','เผื่อคอนกรีตสั่งซื้อ','%',3,0,50,.5)])],
   assumptions:['ชิ้นส่วนทรงสี่เหลี่ยม หน้าตัดคงที่ ไม่หักรอยต่อและช่องเปิด','คาน: แบบท้องและสองข้าง ไม่รวมหน้าปิดหัว; เสา: แบบสี่ด้าน; พื้น: เฉพาะท้องพื้น','เหล็กจากอัตรา กก./ลบ.ม. เป็นค่าเผื่อประมาณราคา ไม่ใช่ BBS หรือการออกแบบเหล็ก'],references:[],
-  calculate(p){const r=buildingQuantity(p);return {summary:[metric('คอนกรีตสุทธิ',r.volume,'ลบ.ม.'),metric('พื้นที่แบบหล่อ',r.formwork,'ตร.ม.'),metric('เหล็กประมาณการ',r.steel,'กก.')],checks:[],steps:[{title:'ปริมาตรคอนกรีต',formula:'V = L × b × h × จำนวน',result:`${f(r.volume,3)} ลบ.ม.`},{title:'คอนกรีตสั่งซื้อ',formula:'Vorder = V × (1 + เผื่อ / 100)',result:`${f(r.order,3)} ลบ.ม.`},{title:'พื้นที่แบบหล่อ',formula:p.element==='beam'?'A = (2h + b) × L × จำนวน':p.element==='column'?'A = 2(b + h) × L × จำนวน':'A = L × b × จำนวน',result:`${f(r.formwork,3)} ตร.ม.`},{title:'ปริมาณเหล็กประมาณการ',formula:'Wsteel = Vสุทธิ × อัตราเหล็กที่กรอก',result:`${f(r.steel,2)} กก.`}],notes:['ตรวจรอยต่อคาน–เสาและพื้นก่อนรวมปริมาณหลายชิ้น เพื่อไม่ให้นับคอนกรีตซ้ำ'],values:r};}
+  calculate(p){const r=buildingQuantity(p);return {summary:[metric('คอนกรีตก่อนเผื่อ',r.volume,'ลบ.ม.'),metric('พื้นที่แบบหล่อ',r.formwork,'ตร.ม.'),metric('เหล็กประมาณการ',r.steel,'กก.')],checks:[],steps:[{title:'ปริมาตรคอนกรีต',formula:'V = L × b × h × จำนวน',result:`${f(r.volume,3)} ลบ.ม.`},{title:'คอนกรีตสั่งซื้อ',formula:'Vorder = V × (1 + เผื่อ / 100)',result:`${f(r.order,3)} ลบ.ม.`},{title:'พื้นที่แบบหล่อ',formula:p.element==='beam'?'A = (2h + b) × L × จำนวน':p.element==='column'?'A = 2(b + h) × L × จำนวน':'A = L × b × จำนวน',result:`${f(r.formwork,3)} ตร.ม.`},{title:'ปริมาณเหล็กประมาณการ',formula:'Wsteel = Vก่อนเผื่อ × อัตราเหล็กที่กรอก',result:`${f(r.steel,2)} กก.`}],notes:['ตรวจรอยต่อคาน–เสาและพื้นก่อนรวมปริมาณหลายชิ้น เพื่อไม่ให้นับคอนกรีตซ้ำ'],values:r};}
  },
  'quantity-road':{
   id:'quantity-road',title:'ถอดปริมาณงานทาง',description:'ชั้นทางสี่เหลี่ยมผืนผ้าและความหนาคงที่',
@@ -46,10 +57,10 @@ export const quantityTools={
   calculate(p){const r=roadQuantity(p);return {summary:[metric('พื้นที่ถนน',r.area,'ตร.ม.'),metric('ปริมาตรผิวทาง',r.surface,'ลบ.ม.'),metric('น้ำหนักผิวทาง',r.asphaltMass,'ตัน')],checks:[],table:{headers:['รายการ','ปริมาณ','หน่วย'],rows:[['รองพื้นทางบดอัด',f(r.subbase),'ลบ.ม.'],['พื้นทางบดอัด',f(r.base),'ลบ.ม.'],['พื้นทางก่อนบดอัด (ประมาณ)',f(r.looseBase),'ลบ.ม.'],['ผิวทาง',f(r.surface),'ลบ.ม.']]},steps:[{title:'ปริมาตรแต่ละชั้น',formula:'V = ความยาว × ความกว้าง × ความหนา',result:`พื้นทาง ${f(r.base)} ลบ.ม.`},{title:'น้ำหนักวัสดุผิวทาง',formula:'W = Vผิวทาง × ความหนาแน่น',result:`${f(r.asphaltMass)} ตัน`}],notes:['ปริมาตรหลวมกับปริมาตรบดอัดเป็นคนละฐานวัด ต้องระบุใน BOQ ให้ตรงกัน'],values:r};}
  },
  'quantity-canal':{
-  id:'quantity-canal',title:'ถอดปริมาณคลอง',description:'หน้าตัดคลองสี่เหลี่ยมคางหมู',
-  inputGroups:[group('หน้าตัดคลอง',[field('bottom','กว้างท้องคลอง','ม.',2,.01,1000),field('depth','ความลึก','ม.',1.5,.01,100),field('slope','ลาดข้าง z:1 (แนวนอน:แนวตั้ง)','',1.5,0,10,.1),field('length','ความยาวคลอง','ม.',100,.01,100000,1),field('thickness','ความหนาคอนกรีตดาด','ม.',.1,0,1)])],
-  assumptions:['ขนาดที่กรอกคือรูปตัดขุดก่อนเผื่อพื้นที่คอนกรีตดาดและวัสดุชั้นรอง ต้องปรับรูปตัดขุดจริงให้รวมส่วนนี้เอง','คอนกรีตดาดประมาณแบบผิวบาง: ความยาวผิวด้านใน × ความหนา','ไม่รวมคอนกรีตหนาที่มุม รอยต่อ คานขอบ และอาคารชลประทาน'],references:[],
-  calculate(p){const r=canalQuantity(p);return {summary:[metric('ปริมาตรคลองก่อนเผื่อดาด',r.excavation,'ลบ.ม.'),metric('พื้นที่ดาดคลอง',r.liningArea,'ตร.ม.'),metric('คอนกรีตดาดประมาณ',r.concrete,'ลบ.ม.')],checks:[],steps:[{title:'ความกว้างปากคลอง',formula:'T = b + 2zd',result:`${f(r.top)} ม.`},{title:'พื้นที่หน้าตัดขุด',formula:'A = bd + zd²',result:`${f(r.area)} ตร.ม.`},{title:'ปริมาตรดินขุด',formula:'V = A × L',result:`${f(r.excavation)} ลบ.ม.`},{title:'ผิวดาดคลอง',formula:'S = [b + 2d√(1 + z²)] × L',result:`${f(r.liningArea)} ตร.ม.`},{title:'คอนกรีตดาดแบบผิวบาง',formula:'Vc ≈ S × t',result:`${f(r.concrete)} ลบ.ม.`}],notes:['ปริมาตรคอนกรีตเป็นการประมาณผิวบาง ไม่ใช่ผลต่างพื้นที่รูปตัดชั้นใน–ชั้นนอกที่มุม'],values:r};}
+  id:'quantity-canal',title:'ถอดปริมาณคลอง',description:'คลองหน้าตัดคางหมูและคอนกรีตดาดหนาคงที่ตั้งฉากผิว',
+  inputGroups:[group('ขนาดด้านในของคลอง',[field('bottom','กว้างท้องคลองด้านใน b','ม.',2,.01,1000),field('depth','ความลึกด้านในถึงขอบบน d','ม.',1.5,.01,100),field('slope','ลาดข้าง z:1 (แนวนอน:แนวตั้ง)','',1.5,0,10,.1),field('length','ความยาวคลอง L','ม.',100,.01,100000,1),field('thickness','ความหนาดาดตั้งฉากผิว t','ม.',.1,0,1)])],
+  assumptions:['b และ d เป็นขนาดช่องคลองด้านในหลังดาด; ความหนา t วัดตั้งฉากผิวลาดและแนวดิ่งที่ท้องคลอง','ผิวด้านนอกเกิดจาก offset ผิวด้านในด้วย t มุมต่อเป็นจุดตัดผิว และตัดขอบบนในแนวราบระดับเดียวกัน','ดินเดิมอยู่ระดับขอบบน ปริมาตรขุดใช้รูปตัดผิวนอกคอนกรีต ไม่รวมชั้นรอง พื้นที่ทำงาน หรือขุดเผื่อ','ไม่รวมคานขอบ บ่าพิเศษ รอยต่อ การหนามุมเพิ่มเติม หรืออาคารชลประทาน'],references:[],
+  calculate(p){const r=canalQuantity(p);return {summary:[metric('ขุดตามผิวนอกคอนกรีต',r.excavation,'ลบ.ม.'),metric('พื้นที่ผิวดาดด้านใน',r.liningArea,'ตร.ม.'),metric('ปริมาตรคอนกรีตดาด',r.concrete,'ลบ.ม.')],checks:[],table:{headers:['รูปตัด','ปริมาณ','หน่วย'],rows:[['ช่องคลองด้านใน',f(r.channelVolume,3),'ลบ.ม.'],['กว้างท้องคลองด้านนอก',f(r.outerBottom,3),'ม.'],['กว้างปากคลองด้านนอก',f(r.outerTop,3),'ม.'],['ความลึกถึงผิวท้องด้านนอก',f(r.outerDepth,3),'ม.']]},steps:[{title:'รูปตัดและผิวด้านใน',formula:'Ain = bd + zd²; T = b + 2zd; P = b + 2d√(1 + z²)',result:`Ain = ${f(r.area,4)} ตร.ม.; T = ${f(r.top,3)} ม.; P = ${f(r.perimeter,3)} ม.`},{title:'ผิวด้านนอก offset ตามความหนา',formula:'bout = b + 2t[√(1 + z²) − z]; Tout = T + 2t√(1 + z²); dout = d + t',result:`bout = ${f(r.outerBottom,3)}; Tout = ${f(r.outerTop,3)}; dout = ${f(r.outerDepth,3)} ม.`},{title:'หน้าตัดคอนกรีต รวมรอยต่อผิวที่มุม',formula:'Ac = P × t + t²[2√(1 + z²) − z]; Vc = Ac × L',result:`Ac = ${f(r.concreteArea,4)} ตร.ม.; Vc = ${f(r.concrete,3)} ลบ.ม.`},{title:'ดินขุดตามผิวนอก',formula:'Aout = Ain + Ac; Vexcavation = Aout × L',result:`Aout = ${f(r.outerArea,4)} ตร.ม.; Vexcavation = ${f(r.excavation,3)} ลบ.ม.`},{title:'พื้นที่ผิวดาดด้านใน',formula:'S = P × L',result:`S = ${f(r.liningArea,3)} ตร.ม.`}],notes:['ใช้เรขาคณิต offset เต็มรูปตัดตามสมมติฐาน จึงรวมส่วน t² ที่วิธีผิวบาง P × t ละไว้','ปริมาตรดินขุดยังต้องเพิ่มชั้นรอง พื้นที่ทำงาน การขุดเผื่อ หรือปรับระดับดินเดิมตามสภาพจริง'],values:r};}
  },
  'factor-k':{
   id:'factor-k',title:'ดัชนีปรับราคางานก่อสร้าง',description:'ดัชนีถ่วงน้ำหนักที่ผู้ใช้กำหนดเอง',

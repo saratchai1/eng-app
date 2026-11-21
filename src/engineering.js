@@ -8,6 +8,13 @@ const STEEL_E = 200000;
 const format = (value, digits = 2) => Number.isFinite(value)
   ? value.toLocaleString('en-US', { maximumFractionDigits: digits, minimumFractionDigits: digits })
   : 'นอกขอบเขตแบบจำลอง';
+function comparison(actual, limit, atLeast, digits = 2) {
+  let left = format(actual, digits), right = format(limit, digits);
+  // Keep a near-boundary failure legible instead of printing "1.50 < 1.50".
+  if (actual !== limit && left === right) { left = String(actual); right = String(limit); }
+  const passes = atLeast ? actual >= limit : actual <= limit;
+  return `${left} ${atLeast ? (passes ? '≥' : '<') : (passes ? '≤' : '>')} ${right}`;
+}
 const field = (key, label, unit, value, min, max, step = 'any') =>
   ({ key, label, unit, default: value, min, max, step });
 
@@ -32,7 +39,8 @@ const wallGroups = [
     field('phi', 'มุมเสียดทานภายในดิน φ', '°', 30, 10, 45),
     field('gammaDry', 'หน่วยน้ำหนักดินเหนือระดับน้ำ', 'kN/m³', 18, 10, 24),
     field('gammaSat', 'หน่วยน้ำหนักดินอิ่มน้ำ', 'kN/m³', 20, 12, 26),
-    field('surcharge', 'น้ำหนักแผ่บนดิน q', 'kPa', 10, 0, 200),
+    field('surcharge', 'surcharge ด้านข้าง q', 'kPa', 10, 0, 200),
+    field('heelSurcharge', 'surcharge แนวดิ่งเหนือ heel', 'kPa', 0, 0, 200),
     field('waterHeight', 'ความสูงน้ำหลังผนังจากใต้ฐาน', 'm', 0, 0, 18),
     field('friction', 'สัมประสิทธิ์เสียดทานใต้ฐาน μ', '', 0.5, 0.05, 1),
     field('allowable', 'หน่วยแรงดินยอมให้แบบ gross', 'kPa', 150, 1, 3000),
@@ -157,20 +165,26 @@ export function retainingWallModel(input = {}) {
   const stemWeight = p.concreteWeight * stem * H;
   const soilWaterHeight = Math.max(0, hw - base);
   const soilWeight = heel * (gammaDry * (H - soilWaterHeight) + gammaSat * soilWaterHeight);
-  const weight = baseWeight + stemWeight + soilWeight;
-  const weightMoment = baseWeight * B / 2 + stemWeight * (toe + stem / 2) + soilWeight * (toe + stem + heel / 2);
+  const heelSurchargeWeight = p.heelSurcharge * heel;
+  const heelLoadX = toe + stem + heel / 2;
+  const heelSurchargeMoment = heelSurchargeWeight * heelLoadX;
+  const weight = baseWeight + stemWeight + soilWeight + heelSurchargeWeight;
+  const weightMoment = baseWeight * B / 2 + stemWeight * (toe + stem / 2) + soilWeight * heelLoadX + heelSurchargeMoment;
+  const weightX = weightMoment / weight;
   const headSum = p.upliftToe + p.upliftHeel;
   const uplift = WATER * B * headSum / 2;
   const upliftX = headSum === 0 ? B / 2 : B * (p.upliftToe + 2 * p.upliftHeel) / (3 * headSum);
   const upliftMoment = uplift * upliftX;
   const normal = weight - uplift;
   const overturnMoment = horizontalMoment + upliftMoment;
-  const sliding = normal > 0 ? p.friction * normal / lateral : 0;
-  const overturning = weightMoment / overturnMoment;
+  const sliding = normal > 0 ? p.friction * normal / lateral : null;
+  // Ratios about a compressive footing are not a usable stability assessment
+  // when uplift eliminates the normal force, even if a moment ratio is > 1.
+  const overturning = normal > 0 ? weightMoment / overturnMoment : null;
   const resultantX = normal > 0 ? (weightMoment - overturnMoment) / normal : null;
   const signedE = resultantX === null ? null : B / 2 - resultantX;
   const contact = normal > 0 ? bearingContact(normal, normal * signedE, B, 1) : bearingContact(normal, 0, B, 1);
-  return { ...p, heel, ka, gammaSub, pressureHeight, soilWaterHeight, soilForce, surchargeForce, waterForce, lateral, soilMomentBottom, surchargeMomentBottom, waterMomentBottom, horizontalMoment, baseWeight, stemWeight, soilWeight, weight, weightMoment, uplift, upliftX, upliftMoment, normal, overturnMoment, sliding, overturning, resultantX, signedE, contact };
+  return { ...p, heel, ka, gammaSub, pressureHeight, soilWaterHeight, soilForce, surchargeForce, waterForce, lateral, soilMomentBottom, surchargeMomentBottom, waterMomentBottom, horizontalMoment, baseWeight, stemWeight, soilWeight, heelSurchargeWeight, heelLoadX, heelSurchargeMoment, weight, weightMoment, weightX, uplift, upliftX, upliftMoment, normal, overturnMoment, sliding, overturning, resultantX, signedE, contact };
 }
 
 function wallResult(input) {
@@ -178,38 +192,41 @@ function wallResult(input) {
   const pressureOK = v.contact.stable && v.contact.qmax <= v.allowable;
   return {
     summary: [
-      { label: 'FS การเลื่อน', value: v.sliding, unit: '', tone: v.sliding >= v.slidingTarget ? 'ok' : 'warn' },
-      { label: 'FS การพลิก', value: v.overturning, unit: '', tone: v.overturning >= v.overturnTarget ? 'ok' : 'warn' },
+      { label: 'FS การเลื่อน', value: v.sliding ?? 'ไม่มีแรงกดฐาน', unit: '', tone: v.sliding !== null && v.sliding >= v.slidingTarget ? 'ok' : 'warn' },
+      { label: 'FS การพลิก', value: v.overturning ?? 'ไม่มีแรงกดฐาน', unit: '', tone: v.overturning !== null && v.overturning >= v.overturnTarget ? 'ok' : 'warn' },
       { label: 'แรงดันดินสูงสุด qmax', value: v.contact.qmax ?? 'เสียเสถียรภาพ', unit: v.contact.stable ? 'kPa' : '', tone: pressureOK ? 'ok' : 'warn' },
       { label: 'แรงด้านข้างรวม', value: v.lateral, unit: 'kN/m', tone: 'neutral' },
     ],
     checks: [
       { label: 'แรงกดสุทธิใต้ฐานเป็นบวก', pass: v.normal > 0, detail: `N = W − U = ${format(v.normal)} kN/m` },
-      { label: 'การเลื่อนตามเกณฑ์ที่กรอก', pass: v.sliding >= v.slidingTarget, detail: `${format(v.sliding)} ≥ ${format(v.slidingTarget)}` },
-      { label: 'การพลิกตามเกณฑ์ที่กรอก', pass: v.overturning >= v.overturnTarget, detail: `${format(v.overturning)} ≥ ${format(v.overturnTarget)}` },
+      { label: 'การเลื่อนตามเกณฑ์ที่กรอก', pass: v.sliding === null ? null : v.sliding >= v.slidingTarget, detail: v.sliding === null ? 'ไม่ประเมิน FS เมื่อแรงกดสุทธิ N ≤ 0' : comparison(v.sliding, v.slidingTarget, true) },
+      { label: 'การพลิกตามเกณฑ์ที่กรอก', pass: v.overturning === null ? null : v.overturning >= v.overturnTarget, detail: v.overturning === null ? 'ไม่ประเมิน FS เมื่อแรงกดสุทธิ N ≤ 0' : comparison(v.overturning, v.overturnTarget, true) },
       { label: 'ผลลัพธ์แรงอยู่ภายในฐาน', pass: v.contact.stable, detail: v.resultantX === null ? 'แรงยกมากกว่าหรือเท่ากับน้ำหนักกด' : `x จากปลาย toe = ${format(v.resultantX)} m; ต้องอยู่ใน 0 < x < ${format(v.width)} m` },
       { label: 'สัมผัสดินเต็มฐาน', pass: v.contact.stable && v.contact.regime === 'full', detail: v.contact.stable ? `e = ${format(v.contact.eccentricity, 3)} m; B/6 = ${format(v.width / 6, 3)} m` : 'ไม่มีสมดุลแบบรับแรงอัดอย่างเดียว' },
-      { label: 'หน่วยแรงดินไม่เกินค่าที่กรอก', pass: pressureOK, detail: v.contact.stable ? `${format(v.contact.qmax)} ≤ ${format(v.allowable)} kPa (gross)` : 'ไม่ประเมิน qmax เมื่อเสียเสถียรภาพ' },
+      { label: 'หน่วยแรงดินไม่เกินค่าที่กรอก', pass: v.contact.stable ? pressureOK : null, detail: v.contact.stable ? `${comparison(v.contact.qmax, v.allowable, false)} kPa (gross)` : 'ไม่ประเมิน qmax เมื่อเสียเสถียรภาพ' },
     ],
     steps: [
       { title: 'สัมประสิทธิ์แรงดันดิน Rankine', formula: 'Ka = (1 − sin φ) / (1 + sin φ)', substitution: `φ = ${v.phi}°`, result: `Ka = ${format(v.ka, 4)}` },
       { title: 'แรงดันดินประสิทธิผลและ surcharge ถึงใต้ฐาน', formula: 'D = H + tbase; Ps = Ka/2 [γd D² + (γsat − γw − γd) hw²]; Pq = Ka q D', result: `D = ${format(v.pressureHeight)} m; Ps = ${format(v.soilForce)}; Pq = ${format(v.surchargeForce)} kN/m` },
       { title: 'แรงดันน้ำแยกจากแรงดันดิน', formula: 'Pw = γw hw²/2; P = Ps + Pq + Pw', result: `Pw = ${format(v.waterForce)}; P = ${format(v.lateral)} kN/m` },
       { title: 'โมเมนต์แรงด้านข้างรอบปลาย toe ใต้ฐาน', formula: 'Mh = Ka/6 [γd D³ + (γsat − γw − γd) hw³] + Pq D/2 + Pw hw/3', result: `Mh = ${format(v.horizontalMoment)} kN·m/m` },
-      { title: 'น้ำหนักกดและแรงยก', formula: 'W = Wbase + Wstem + Wsoil; U = γw B (hToe + hHeel)/2; N = W − U', result: `W = ${format(v.weight)}; U = ${format(v.uplift)}; N = ${format(v.normal)} kN/m` },
-      { title: 'เสถียรภาพและตำแหน่งแรงลัพธ์', formula: 'FSslide = μN/P; FSoverturn = MW/(Mh + MU); x = (MW − Mh − MU)/N', result: `FSslide = ${format(v.sliding)}; FSoverturn = ${format(v.overturning)}; x = ${v.resultantX === null ? 'ไม่มี' : format(v.resultantX) + ' m'}` },
+      { title: 'น้ำหนักแผ่แนวดิ่งเหนือ heel', formula: 'Wq,heel = qheel × heel; xq,heel = toe + stem + heel/2', result: `Wq,heel = ${format(v.heelSurchargeWeight)} kN/m; xq,heel = ${format(v.heelLoadX)} m จาก toe` },
+      { title: 'น้ำหนักกดและแรงยก', formula: 'W = Wbase + Wstem + Wsoil + Wq,heel; U = γw B (hToe + hHeel)/2; N = W − U', result: `W = ${format(v.weight)}; U = ${format(v.uplift)}; N = ${format(v.normal)} kN/m; xW = ${format(v.weightX)} m จาก toe` },
+      { title: 'เสถียรภาพและตำแหน่งแรงลัพธ์', formula: 'เมื่อ N > 0: FSslide = μN/P; FSoverturn = MW/(Mh + MU); x = (MW − Mh − MU)/N', result: v.normal <= 0 ? 'ไม่ประเมิน FS และตำแหน่งแรงลัพธ์: ไม่มีแรงกดสุทธิใต้ฐาน' : `FSslide = ${format(v.sliding)}; FSoverturn = ${format(v.overturning)}; x = ${format(v.resultantX)} m` },
       { title: 'การกระจายแรงใต้ฐาน', formula: v.contact.regime === 'full' ? 'qmax,min = N/B (1 ± 6e/B)' : 'เมื่อ B/6 < e < B/2: a = 3(B/2 − e); qmax = 2N/a; qmin = 0', result: v.contact.stable ? `qmax = ${format(v.contact.qmax)}; qmin = ${format(v.contact.qmin)} kPa; ช่วงสัมผัส = ${format(v.contact.contactWidth)} m` : 'ไม่พบสมดุลรับแรงอัดภายในฐาน' },
     ],
     notes: [
       'คิดต่อความยาวกำแพง 1 m; แรงด้านข้างกระทำบนระนาบหลัง heel ตั้งแต่ระดับดินถึงใต้ฐาน รวมส่วนด้านข้างฐานด้วย',
       'H วัดเหนือหลังฐาน แต่ hw วัดจากใต้ฐาน; น้ำหนักดินบน heel ใช้ความสูงอิ่มน้ำ max(0, hw − tbase) และหัก uplift แยก',
       'เฮดน้ำใต้ฐานเป็นค่ากรอกอิสระ ต้องกำหนดจากสภาพการระบายน้ำจริง; ค่าเริ่มต้น 0 ไม่ใช่ข้อยืนยันว่าไม่มี uplift',
-      'ละเลยแรง passive หน้า toe และละเลยผลดีของน้ำหนัก surcharge บน heel; รวม surcharge เป็นแรงด้านข้าง',
+      'surcharge ด้านข้าง q และ surcharge แนวดิ่งเหนือ heel เป็นสองข้อมูลแยกกัน; ถ้าโหลดสม่ำเสมอเดียวกันคลุม heel ด้วย ให้กรอกค่าทั้งสองเท่ากัน',
+      'ค่าตั้งต้น surcharge เหนือ heel = 0 ใช้กรณีไม่มีโหลดแนวดิ่งที่นำมารวม; ตรวจกรณีโหลดที่มี/ไม่มีบน heel เพราะมีผลทั้งต่อเสถียรภาพและแรงกดดิน',
+      'ละเลยแรง passive หน้า toe; ไม่มีการเลือกชุดแรงหรือกรณีโหลดให้โดยอัตโนมัติ',
       'FS เป็นอัตราส่วนแบบ conventional screening ตามเกณฑ์ที่กรอก ไม่ใช่วิธีตรวจรับรองตาม USACE',
       'ยังไม่ตรวจเหล็กผนัง/ฐาน แรงเฉือน การทรุดตัว เสถียรภาพรวม การไหลซึม หรือแผ่นดินไหว',
     ],
     diagram: { type: 'retaining-wall', ...v }, values: v,
-    table: { headers: ['แรงแนวดิ่ง', 'kN/m'], rows: [['คอนกรีตฐาน', format(v.baseWeight)], ['คอนกรีตผนัง', format(v.stemWeight)], ['ดินเหนือ heel', format(v.soilWeight)], ['แรงยกใต้ฐาน (หักออก)', format(v.uplift)]] },
+    table: { headers: ['แรงแนวดิ่ง', 'kN/m', 'ระยะจาก toe (m)'], rows: [['คอนกรีตฐาน', format(v.baseWeight), format(v.width / 2)], ['คอนกรีตผนัง', format(v.stemWeight), format(v.toe + v.stem / 2)], ['ดินเหนือ heel', format(v.soilWeight), format(v.heelLoadX)], ['surcharge เหนือ heel', format(v.heelSurchargeWeight), format(v.heelLoadX)], ['รวมแรงกด W', format(v.weight), format(v.weightX)], ['แรงยกใต้ฐาน (หักออก)', format(v.uplift), format(v.upliftX)], ['ปฏิกิริยาดิน N รวมผลโมเมนต์', format(v.normal), v.resultantX === null ? 'ไม่มีสมดุลแรงกด' : format(v.resultantX)]] },
   };
 }
 
@@ -250,8 +267,8 @@ function flexureResult(v, isSlab = false) {
       { label: 'อัตราส่วน Mu / φMn', value: v.utilization === null ? 'ประเมินไม่ได้' : v.utilization * 100, unit: v.utilization === null ? '' : '%', tone: v.utilization !== null && v.utilization <= 1 ? 'ok' : 'warn' },
     ],
     checks: [
-      { label: 'หน้าตัดอยู่ในช่วง tension controlled', pass: v.tensionControlled, detail: `εt = ${format(v.strain, 5)}; เกณฑ์ ≥ ${format(v.strainLimit, 5)}` },
-      { label: 'กำลังดัดเพียงพอเฉพาะแบบจำลองนี้', pass: v.capacity === null ? null : v.capacity >= v.mu, detail: v.capacity === null ? 'ไม่คำนวณ φMn เมื่ออยู่นอกช่วงที่รองรับ' : `φMn = ${format(v.capacity)} ≥ Mu = ${format(v.mu)} kN·m${perWidth}` },
+      { label: 'หน้าตัดอยู่ในช่วง tension controlled', pass: v.tensionControlled, detail: `เทียบ εt กับเกณฑ์: ${comparison(v.strain, v.strainLimit, true, 6)}` },
+      { label: 'กำลังดัดเพียงพอเฉพาะแบบจำลองนี้', pass: v.capacity === null ? null : v.capacity >= v.mu, detail: v.capacity === null ? 'ไม่คำนวณ φMn เมื่ออยู่นอกช่วงที่รองรับ' : `เทียบ φMn กับ Mu: ${comparison(v.capacity, v.mu, true)} kN·m${perWidth}` },
     ],
     steps: [
       { title: 'พื้นที่เหล็กดึง', formula: isSlab ? 'As = (1000 / s) × πdb²/4' : 'As = n × πdb²/4', result: `As = ${format(v.steelArea)} mm²${perWidth}` },
@@ -287,7 +304,7 @@ function footingResult(input) {
     checks: [
       { label: 'แรงลัพธ์อยู่ภายในฐาน', pass: v.stable, detail: `e = ${format(v.eccentricity, 3)} m; ต้อง e < B/2 = ${format(v.width / 2, 3)} m` },
       { label: 'สัมผัสเต็มฐานโดยไม่มีแรงดึง', pass: v.regime === 'full', detail: v.regime === 'partial' ? 'มีการแยกจากดินบางส่วน ใช้แรงดันสามเหลี่ยมในบริเวณรับแรงอัด' : v.stable ? 'e ≤ B/6' : 'ไม่พบสมดุลแบบรับแรงอัดอย่างเดียว' },
-      { label: 'หน่วยแรงสูงสุดไม่เกินค่าที่กรอก', pass: v.stable && v.qmax <= v.allowable, detail: v.stable ? `${format(v.qmax)} ≤ ${format(v.allowable)} kPa (gross)` : 'ไม่ตรวจหน่วยแรงหลังเสียเสถียรภาพ' },
+      { label: 'หน่วยแรงสูงสุดไม่เกินค่าที่กรอก', pass: v.stable ? v.qmax <= v.allowable : null, detail: v.stable ? `${comparison(v.qmax, v.allowable, false)} kPa (gross)` : 'ไม่ตรวจหน่วยแรงหลังเสียเสถียรภาพ' },
     ],
     steps: [
       { title: 'การเยื้องศูนย์ของแรงรวม', formula: 'e = |M| / N', result: `e = ${format(v.eccentricity, 4)} m` },
@@ -327,8 +344,8 @@ function shoringResult(input) {
       { label: 'หน่วยแรงใต้แผ่นรอง', value: v.padPressure, unit: 'kPa', tone: v.padPressure <= v.allowable ? 'ok' : 'warn' },
     ],
     checks: [
-      { label: 'ภาระแนวดิ่งไม่เกิน WLL ที่ปรับลด', pass: v.demand <= v.reducedCapacity, detail: `${format(v.demand)} ≤ ${format(v.reducedCapacity)} kN ต่อเฟรม` },
-      { label: 'แรงกดใต้แผ่นรองไม่เกินค่าที่กรอก', pass: v.padPressure <= v.allowable, detail: `${format(v.padPressure)} ≤ ${format(v.allowable)} kPa; สมมติทุกขารับแรงเท่ากัน` },
+      { label: 'ภาระแนวดิ่งไม่เกิน WLL ที่ปรับลด', pass: v.demand <= v.reducedCapacity, detail: `${comparison(v.demand, v.reducedCapacity, false)} kN ต่อเฟรม` },
+      { label: 'แรงกดใต้แผ่นรองไม่เกินค่าที่กรอก', pass: v.padPressure <= v.allowable, detail: `${comparison(v.padPressure, v.allowable, false)} kPa; สมมติทุกขารับแรงเท่ากัน` },
     ],
     steps: [
       { title: 'ภาระแผ่ต่อพื้นที่', formula: 'q = (γc t + qform + qconstruction) × amplification', result: `q = ${format(v.designLoad)} kPa` },
@@ -352,7 +369,7 @@ export const engineeringTools = {
     id: 'retaining-wall', title: 'กำแพงกันดิน',
     description: 'Rankine · แรงดันน้ำ · การเลื่อน · การพลิก · แรงกดใต้ฐาน',
     inputGroups: wallGroups,
-    assumptions: ['ดินถมแนวราบ ไม่มี cohesion; ระนาบ active pressure แนวดิ่งหลัง heel ไม่มี wall friction', 'แรงด้านข้างคิดตลอด D = H + ความหนาฐาน; ระดับน้ำ hw วัดขึ้นจากใต้ฐาน', 'แรงสถิตต่อกำแพงยาว 1 m; เกณฑ์ FS และ allowable pressure เป็นค่าที่ผู้ใช้กำหนด', 'คัดกรองเสถียรภาพภายนอก ยังไม่ออกแบบเหล็กเสริมหรือรับรองการออกแบบ'],
+    assumptions: ['ดินถมแนวราบ ไม่มี cohesion; ระนาบ active pressure แนวดิ่งหลัง heel ไม่มี wall friction', 'แรงด้านข้างคิดตลอด D = H + ความหนาฐาน; ระดับน้ำ hw วัดขึ้นจากใต้ฐาน', 'q ด้านข้างกับ surcharge แนวดิ่งเหนือ heel เป็นคนละช่อง; โหลดเดียวกันที่คลุม heel ต้องกรอกทั้งสองช่อง', 'แรงสถิตต่อกำแพงยาว 1 m; เกณฑ์ FS และ allowable pressure เป็นค่าที่ผู้ใช้กำหนด', 'คัดกรองเสถียรภาพภายนอก ยังไม่ออกแบบเหล็กเสริมหรือรับรองการออกแบบ'],
     references: [sources.wall, sources.contact], calculate: wallResult,
   },
   'rc-beam': {

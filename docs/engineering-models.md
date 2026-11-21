@@ -23,21 +23,24 @@ P = Ps + Pq + Pw
 Mh,bottom = Ms,bottom + Mq,bottom + Mw,bottom
 ```
 
-Water pressure is separate and is **never multiplied by Ka**. All moments are already about the footing underside; no second footing-thickness shift is added. The saturated height of soil **above the heel** is `hsoil = max(0, hw − t)`. Its self-weight is `heel × [γdry(H − hsoil) + γsat hsoil]`, using total `γsat`, not submerged unit weight. The beneficial vertical surcharge above the heel is conservatively omitted; its lateral pressure is included.
+Water pressure is separate and is **never multiplied by Ka**. All moments are already about the footing underside; no second footing-thickness shift is added. The saturated height of soil **above the heel** is `hsoil = max(0, hw − t)`. Its self-weight is `heel × [γdry(H − hsoil) + γsat hsoil]`, using total `γsat`, not submerged unit weight.
+
+Lateral surcharge `q` and vertical surcharge above the heel `qheel` are explicit, independent inputs. Vertical surcharge adds `Wq = qheel × heel` at `xq = toe + stem + heel/2` to the weight and weight moment. If one uniformly distributed load covers the heel and the retained ground, enter that load in **both** fields. The default `qheel = 0` preserves the original example's vertical load case; it is not an assumption that every surcharge has no vertical effect. Omitting heel load can understate bearing pressure and is not universally conservative. The user must consider relevant loaded/unloaded cases. There is no automatic load-combination choice or spatial influence analysis of localized loads.
 
 Uplift is specified independently using heads above the footing underside at the toe (`hT`) and heel (`hH`), with linearly varying pressure:
 
 ```text
 U = γw B (hT + hH)/2
 xU = B (hT + 2hH)/(3(hT + hH)), if hT + hH > 0
+W = Wbase + Wstem + Wsoil + qheel × heel
 N = W − U
 FSslide = μN/P, only for N > 0
-FSoverturn = MW/(Mh + U xU)
+FSoverturn = MW/(Mh + U xU), reported only for N > 0
 xR = (MW − Mh − U xU)/N
 e = B/2 − xR
 ```
 
-`MW` includes the actual centroids of base, stem and soil above the heel. No double subtraction of buoyancy is made. A zero uplift input is an assumption, not a finding about site drainage. A non-positive `N` is an uplift failure; a resultant outside the footing is a failure without a numerical bearing pressure.
+`MW` includes the actual centroids of base, stem, soil and surcharge above the heel. The calculation table reports all vertical forces, their positions and the total weight centroid `xW = MW/W`. The soil-reaction position also includes the applied horizontal-load moment; it differs from the vertical weight centroid. No double subtraction of buoyancy is made. A zero uplift input is an assumption, not a finding about site drainage. A non-positive `N` is an uplift failure: both FS ratios are unassessed even if the raw moment ratio happens to exceed its target. A resultant outside the footing is a failure without a numerical bearing pressure; the bearing-capacity comparison is then unassessed.
 
 The sliding and overturning ratios are conventional screening ratios with **user-entered** thresholds (example defaults 1.5 and 2.0). They do not implement USACE's complete design framework or its developed/reduced shear-strength sliding method. Gross bearing pressure is compared with the user-entered gross allowable bearing pressure.
 
@@ -108,6 +111,39 @@ Legs are assumed equally loaded. WLL must correspond to the actual model, frame 
 
 Not included: member design, joists, bearers, jacks/U-heads, buckling, lateral loads, bracing, unequal leg load, concentrated stored materials, slab support capacity, ground settlement, casting sequence or FEA. Passing these two numerical comparisons alone is insufficient to approve a shoring system.
 
+## Canal takeoff: exact supported offset geometry
+
+`src/quantities.js` uses the **clear inside** trapezoidal dimensions after lining: bottom width `b`, depth `d` up to the structural top edge, and bank slope `z` horizontal to 1 vertical. Length `L` is constant. Lining thickness `t` is measured normal to each sloping side and vertically at the bottom. The outer parallel faces meet at their intersections, and both sides end at the same horizontal top elevation as the inside profile. This is a declared independent geometry model, not a claim about the reference website's unseen implementation.
+
+Let `s = √(1 + z²)`:
+
+```text
+Ainside = bd + zd²
+Pinside = b + 2ds
+Tinside = b + 2zd
+boutside = b + 2t(s − z)
+Toutside = Tinside + 2ts
+doutside = d + t
+Aconcrete = Pinside t + t²(2s − z)
+Aoutside = Ainside + Aconcrete
+Vclear = Ainside L
+Vconcrete = Aconcrete L
+Vexcavation = Aoutside L
+Slining = Pinside L
+```
+
+The concrete cross-area equals the difference between the inner and outer trapezoids. The direct expression avoids cancellation for a thin lining and includes the corner contribution that `Pinside × t` omits. Thick linings are therefore still handled by the supported geometry rather than an unbounded thin-layer approximation. A zero thickness returns zero concrete and makes the outer and inner profiles equal.
+
+Excavation assumes original ground at the top edge and excavation exactly to the concrete outer surface. It does **not** include subbase, working space, over-excavation, variations in original terrain, joints, a coping beam or locally thickened corners. It is an idealized geometric takeoff, not a complete construction quantity.
+
+Example `b=2 m`, `d=1.5 m`, `z=1.5`, `L=100 m`, `t=0.1 m`: clear channel volume is `637.5 m³`, inner lining area `740.832691 m²`, concrete `76.188820 m³`, and outer-profile excavation `713.688820 m³`. The former thin-layer concrete value was `74.083269 m³`; saved input values are now recomputed using the explicitly defined full offset geometry.
+
+## User-defined weighted price index
+
+The generic index remains `K = a + b(L/L₀) + c(C/C₀) + d(S/S₀)` with the four weights summing to one. It is not an official contract compensation calculation or a live index feed.
+
+Only floating-point summation roundoff is tolerated in the weight total (`16 × Number.EPSILON`); a genuine gap such as `9×10⁻⁹` is rejected. The previous `10⁻⁸` tolerance could generate a false monetary adjustment on very large project amounts. The monetary change is calculated directly as `amount × Σ wi (Ii − Ii₀)/Ii₀` to avoid subtracting near-equal values in `K − 1`. Identical current/base indices return exactly zero change.
+
 ## Sources and applicability
 
 - [USACE EM 1110-2-2502 (2022)](https://www.publications.usace.army.mil/Portals/76/Users/182/86/2486/EM%201110-2-2502.pdf?JMIwQ0zD=0N5Sl): reference for Rankine earth pressures, groundwater and surcharge. The app's conventional FS screening is not asserted to be a complete implementation of the manual.
@@ -120,4 +156,6 @@ The statics-based shoring demand calculation is a derivation from user-provided 
 
 ## Numerical verification
 
-Tests use force/moment equilibrium and independent hand values, not only snapshots of implementation output. They cover both contact transitions, sign symmetry, wall pressure integration in layers, independent hydrostatic load, moment-datum offsets, uplift centroids, physical failures, RC strain gating, a checked RC benchmark, slab area scaling, shoring tributary-area scaling and malformed imported inputs.
+Tests use force/moment equilibrium and independent hand values, not only snapshots of implementation output. They cover both contact transitions, sign symmetry, wall pressure integration in layers, independent hydrostatic load, moment-datum offsets, uplift centroids, physical failures, RC strain gating, a checked RC benchmark, slab area scaling, shoring tributary-area scaling and malformed imported inputs. Added regressions cover vertical heel surcharge affecting bearing, a no-compression uplift case whose raw overturning ratio misleadingly exceeded two, proper unassessed checks, and legible near-limit comparisons. Quantity regressions compare exact canal lining against independently calculated polygon areas (including thick lining and steep banks) and reject price-weight gaps that could create fictional adjustments.
+
+Pass/fail checks use unrounded numbers. Reported inequality signs reflect the actual result. If normal display rounding would make unequal values appear equal, the check displays their distinct numeric values instead of an impossible comparison such as `150.00 > 150.00`.

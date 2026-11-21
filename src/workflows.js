@@ -17,13 +17,20 @@ const fmt = value => numberFormat.format(value);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const clone = value => JSON.parse(JSON.stringify(value));
 const text = (value, fallback = '', max = 1000) => typeof value === 'string' ? value.slice(0, max) : fallback;
-const numericValue = (value, fallback) => typeof value === 'number' || typeof value === 'string' ? value : fallback;
+const DECIMAL = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/;
+const numericValue = (value, fallback) => {
+  if (value === undefined) return fallback;
+  if (typeof value === 'number') return value;
+  if (typeof value === 'string') return value.trim() && DECIMAL.test(value.trim()) && Number.isFinite(Number(value)) ? Number(value) : value;
+  return null;
+};
 const uid = prefix => `${prefix}${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 
 export function requireNumber(value, label, { min = 0, max = 1e12, integer = false } = {}) {
   if (!['number', 'string'].includes(typeof value) || (typeof value === 'string' && !value.trim())) {
     throw new Error(`${label}: กรุณากรอกตัวเลข`);
   }
+  if (typeof value === 'string' && !DECIMAL.test(value.trim())) throw new Error(`${label}: กรุณากรอกตัวเลขฐานสิบ`);
   const n = Number(value);
   if (!Number.isFinite(n) || n < min || n > max || (integer && !Number.isInteger(n))) {
     throw new Error(`${label}: ต้องเป็น${integer ? 'จำนวนเต็ม' : 'ตัวเลข'}ระหว่าง ${min} ถึง ${max}`);
@@ -88,6 +95,7 @@ const PRESETS = {
 export function normalizeBoqState(source, toolId = 'boq-building') {
   const defaults = PRESETS[toolId] || PRESETS['boq-building'];
   const sourceObject = source && typeof source === 'object' && !Array.isArray(source) ? source : null;
+  if (Array.isArray(sourceObject?.rows) && sourceObject.rows.length > MAX_ROWS) throw new Error(`BOQ รองรับไม่เกิน ${MAX_ROWS} รายการ กรุณาแบ่งไฟล์ก่อนเปิด`);
   const rows = Array.isArray(sourceObject?.rows) ? sourceObject.rows.slice(0, MAX_ROWS) : defaults.map((row, i) => ({ id: `R${i + 1}`, name: row[0], unit: row[1], quantity: row[2], material: row[3], labor: row[4] }));
   return {
     version: 1,
@@ -124,6 +132,22 @@ export function calculateBoq(state) {
   return { rows, material, labor, direct, overhead, overheadAmount, beforeVat, vat, vatAmount, total };
 }
 
+/** Non-mutating table edits; row identities remain stable except for a new copy. */
+export function changeBoqRows(rows, action, index, newId = uid('R')) {
+  if (!Array.isArray(rows) || !Number.isInteger(index) || index < 0 || index >= rows.length) throw new Error('ไม่พบรายการที่เลือก');
+  const next = [...rows];
+  if (action === 'copy') {
+    if (rows.length >= MAX_ROWS) throw new Error(`เพิ่มได้ไม่เกิน ${MAX_ROWS} รายการ`);
+    if (!newId || rows.some(row => row.id === newId)) throw new Error('รหัสรายการสำเนาต้องไม่ซ้ำ');
+    next.splice(index + 1, 0, { ...rows[index], id: newId, name: `${rows[index].name} (สำเนา)`.slice(0, 180) });
+  } else if (action === 'delete') next.splice(index, 1);
+  else if (action === 'move-up' || action === 'move-down') {
+    const target = index + (action === 'move-up' ? -1 : 1);
+    if (target >= 0 && target < next.length) [next[index], next[target]] = [next[target], next[index]];
+  } else throw new Error('คำสั่งจัดรายการไม่ถูกต้อง');
+  return next;
+}
+
 function card(label, value, unit = '', variant = '') {
   return `<div class="wf-stat ${variant}"><span>${esc(label)}</span><strong>${esc(value)}${unit ? `<small>${esc(unit)}</small>` : ''}</strong></div>`;
 }
@@ -136,6 +160,7 @@ function contextOf(context) {
 
 function mountBoq(container, toolId, initialState, context) {
   let state = normalizeBoqState(initialState, toolId);
+  let rowUndo = null;
   const priceBook = toolId === 'price-book';
   const ctx = contextOf(context);
   function renderRows() {
@@ -147,10 +172,12 @@ function mountBoq(container, toolId, initialState, context) {
       <td>${input(`ราคาวัสดุ รายการ ${i + 1}`, row.material, `type="number" min="0" step="any" data-wf-field="material" data-index="${i}" class="wf-number-input"`)}</td>
       <td>${input(`ค่าแรง รายการ ${i + 1}`, row.labor, `type="number" min="0" step="any" data-wf-field="labor" data-index="${i}" class="wf-number-input"`)}</td>
       <td class="wf-money" data-wf-total="${i}">—</td>
-      <td><button type="button" class="wf-icon-button" data-wf-action="delete" data-index="${i}" aria-label="ลบรายการ ${i + 1}">×</button></td>
+      <td><div class="wf-row-tools"><button type="button" data-wf-action="copy" data-index="${i}" aria-label="ทำสำเนารายการ ${i + 1}">สำเนา</button><button type="button" data-wf-action="move-up" data-index="${i}" aria-label="เลื่อนรายการ ${i + 1} ขึ้น" ${i === 0 ? 'disabled' : ''}>ขึ้น</button><button type="button" data-wf-action="move-down" data-index="${i}" aria-label="เลื่อนรายการ ${i + 1} ลง" ${i === state.rows.length - 1 ? 'disabled' : ''}>ลง</button><button type="button" class="wf-row-delete" data-wf-action="delete" data-index="${i}" aria-label="ลบรายการ ${i + 1}">ลบ</button></div></td>
     </tr>`).join('') || `<tr><td colspan="8" class="wf-empty">ยังไม่มีรายการ กด “เพิ่มรายการ” เพื่อเริ่มต้น</td></tr>`;
   }
   function refresh() {
+    const undo = container.querySelector('[data-wf-action="undo-row"]');
+    undo.disabled = !rowUndo; undo.textContent = rowUndo ? rowUndo.label : 'ย้อนรายการ';
     const error = container.querySelector('[data-wf-errors]');
     try {
       const result = calculateBoq(state);
@@ -171,8 +198,8 @@ function mountBoq(container, toolId, initialState, context) {
   container.innerHTML = `<div class="wf-workspace">
     <div class="wf-notice"><b>${priceBook ? 'คลังราคาที่คุณกำหนดเอง' : 'แบบประมาณราคาของโครงการ'}</b> · ราคาที่ใส่ไว้เป็นตัวอย่าง ${priceBook ? 'ไม่มีการดึงราคาออนไลน์' : 'ค่าอำนวยการนี้เป็นเปอร์เซ็นต์ที่กรอกเอง ไม่ใช่ Factor F หรือแบบฟอร์มรับรองของราชการ'}</div>
     <div class="wf-stats" data-wf-summary aria-live="polite"></div><div data-wf-errors></div>
-    <div class="wf-panel"><div class="wf-panel-head"><div><h3>${priceBook ? 'ราคาต่อหน่วย' : 'รายการปริมาณและราคา'}</h3><p>แก้ไขตัวเลขในตาราง ยอดรวมจะคำนวณทันที</p></div><div class="wf-actions"><button type="button" data-wf-action="csv" class="wf-button">ส่งออก CSV</button><button type="button" data-wf-action="add" class="wf-button wf-primary">+ เพิ่มรายการ</button></div></div>
-    <div class="wf-scroll"><table class="wf-table wf-boq-table"><thead><tr><th>#</th><th>รายการงาน / วัสดุ</th><th>หน่วย</th>${priceBook ? '' : '<th>ปริมาณ</th>'}<th>วัสดุ/หน่วย (บาท)</th><th>แรง/หน่วย (บาท)</th><th>${priceBook ? 'รวม/หน่วย' : 'รวม (บาท)'}</th><th></th></tr></thead><tbody data-wf-rows></tbody></table></div>
+    <div class="wf-panel"><div class="wf-panel-head"><div><h3>${priceBook ? 'ราคาต่อหน่วย' : 'รายการปริมาณและราคา'}</h3><p>แก้ไข คัดลอก และจัดลำดับรายการ ยอดรวมคำนวณทันที</p></div><div class="wf-actions"><button type="button" data-wf-action="undo-row" class="wf-button" disabled>ย้อนรายการ</button><button type="button" data-wf-action="csv" class="wf-button">ส่งออก CSV</button><button type="button" data-wf-action="add" class="wf-button wf-primary">+ เพิ่มรายการ</button></div></div>
+    <div class="wf-scroll"><table class="wf-table wf-boq-table"><thead><tr><th>#</th><th>รายการงาน / วัสดุ</th><th>หน่วย</th>${priceBook ? '' : '<th>ปริมาณ</th>'}<th>วัสดุ/หน่วย (บาท)</th><th>แรง/หน่วย (บาท)</th><th>${priceBook ? 'รวม/หน่วย' : 'รวม (บาท)'}</th><th>จัดรายการ</th></tr></thead><tbody data-wf-rows></tbody></table></div>
     ${priceBook ? '' : `<div class="wf-cost-footer"><div class="wf-inline-fields"><label>ค่าอำนวยการและกำไร (%)${input('ค่าอำนวยการและกำไร (%)', state.overhead, 'type="number" min="0" max="1000" step="any" data-wf-setting="overhead"')}</label><label>VAT (%)${input('VAT (%)', state.vat, 'type="number" min="0" max="100" step="any" data-wf-setting="vat"')}</label></div><div class="wf-breakdown" data-wf-breakdown></div></div>`}
     </div><label class="wf-notes-label">แหล่งราคา / ข้อสมมติ / หมายเหตุ<textarea data-wf-setting="notes" rows="3" maxlength="3000">${esc(state.notes)}</textarea></label>
     <p class="wf-caption">หน่วยเงิน: บาท · คำนวณจากค่าที่กรอกเต็มความละเอียด แสดงผลทศนิยม 2 ตำแหน่ง · ข้อมูลเก็บในเบราว์เซอร์เมื่อบันทึกโครงการ</p>
@@ -183,6 +210,7 @@ function mountBoq(container, toolId, initialState, context) {
     if (el.dataset.wfField) {
       const row = state.rows[Number(el.dataset.index)]; if (!row) return;
       row[el.dataset.wfField] = el.value;
+      rowUndo = null;
     } else if (el.dataset.wfSetting) { state[el.dataset.wfSetting] = el.value; }
     else return;
     refresh(); ctx.onChange();
@@ -192,10 +220,21 @@ function mountBoq(container, toolId, initialState, context) {
     const action = button.dataset.wfAction;
     if (action === 'add') {
       if (state.rows.length >= MAX_ROWS) return ctx.notify(`เพิ่มได้ไม่เกิน ${MAX_ROWS} รายการ`);
+      rowUndo = { rows: clone(state.rows), label: 'ย้อนการเพิ่มรายการ' };
       state.rows.push({ id: uid('R'), name: 'รายการใหม่', unit: 'หน่วย', quantity: 1, material: 0, labor: 0 });
       renderRows(); refresh(); ctx.onChange();
       container.querySelector(`[data-wf-field="name"][data-index="${state.rows.length - 1}"]`)?.focus();
-    } else if (action === 'delete') { state.rows.splice(Number(button.dataset.index), 1); renderRows(); refresh(); ctx.onChange(); }
+    } else if (['copy', 'delete', 'move-up', 'move-down'].includes(action)) {
+      try {
+        const index = Number(button.dataset.index);
+        const next = changeBoqRows(state.rows, action, index);
+        rowUndo = { rows: clone(state.rows), label: action === 'delete' ? 'ย้อนการลบรายการ' : action === 'copy' ? 'ย้อนการทำสำเนา' : 'ย้อนการจัดลำดับ' };
+        state.rows = next; renderRows(); refresh(); ctx.onChange();
+        if (action === 'copy') container.querySelector(`[data-wf-field="name"][data-index="${index + 1}"]`)?.focus();
+      } catch (error) { ctx.notify(error.message); }
+    } else if (action === 'undo-row' && rowUndo) {
+      state.rows = rowUndo.rows; rowUndo = null; renderRows(); refresh(); ctx.onChange(); ctx.notify('ย้อนการจัดรายการล่าสุดแล้ว');
+    }
     else if (action === 'csv') {
       try {
         const result = calculateBoq(state);
@@ -214,7 +253,7 @@ function mountBoq(container, toolId, initialState, context) {
       try {
         const r = calculateBoq(state);
         return `<section class="wf-report"><h2>${esc(TITLES[toolId])}</h2><p>ราคาและปริมาณตัวอย่าง/กรอกเอง ไม่ใช่ราคาสดหรือแบบรับรองทางราชการ</p><table><thead><tr><th>รายการ</th><th>หน่วย</th><th>ปริมาณ</th><th>วัสดุ/หน่วย</th><th>แรง/หน่วย</th><th>รวม บาท</th></tr></thead><tbody>${r.rows.map(row => `<tr><td>${esc(row.name)}</td><td>${esc(row.unit)}</td><td>${fmt(priceBook ? 1 : row.quantity)}</td><td>${money(row.material)}</td><td>${money(row.labor)}</td><td>${money(priceBook ? row.material + row.labor : row.total)}</td></tr>`).join('')}</tbody></table>${priceBook ? '' : `<p>ต้นทุนตรง ${money(r.direct)} บาท<br>ค่าอำนวยการและกำไร ${fmt(r.overhead)}% = ${money(r.overheadAmount)} บาท<br>VAT ${fmt(r.vat)}% ของยอดหลังบวกค่าอำนวยการ = ${money(r.vatAmount)} บาท</p><h3>รวมทั้งสิ้น ${money(r.total)} บาท</h3><p>สูตร: ยอดรวม = Σ[ปริมาณ × (วัสดุ/หน่วย + แรง/หน่วย)] × (1 + ค่าอำนวยการ/100) × (1 + VAT/100)</p>`}<p>แหล่งราคา / ข้อสมมติ: ${esc(state.notes)}</p><p>ใช้ค่าที่ไม่ปัดเศษในการรวม แสดงทศนิยม 2 ตำแหน่ง</p></section>`;
-      } catch (e) { return errorHTML(e); }
+      } catch (e) { throw e; }
     },
     destroy: () => { container.removeEventListener('input', onInput); container.removeEventListener('click', onClick); },
   };
@@ -229,22 +268,26 @@ const DEFAULT_TASKS = [
   { id: 'T6', name: 'ทดสอบและส่งมอบ', duration: 4, predecessors: 'T4,T5', progress: 0, budget: 40000 },
 ];
 
-function parseDate(date) {
-  if (typeof date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error('กรุณาระบุวันเริ่มโครงการ');
+function parseDate(date, label = 'วันเริ่มโครงการ') {
+  if (typeof date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error(`กรุณาระบุ${label}`);
   const parsed = new Date(`${date}T00:00:00Z`);
-  if (!Number.isFinite(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== date) throw new Error('วันเริ่มโครงการไม่ถูกต้อง');
+  if (!Number.isFinite(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== date) throw new Error(`${label}ไม่ถูกต้อง`);
   return parsed;
 }
 function offsetDate(date, days) {
-  const d = parseDate(date); d.setUTCDate(d.getUTCDate() + days); return d.toISOString().slice(0, 10);
+  const d = parseDate(date); d.setUTCDate(d.getUTCDate() + days); const result = d.toISOString().slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(result)) throw new Error('วันที่สิ้นสุดอยู่นอกขอบเขตปฏิทินที่รองรับ');
+  return result;
 }
 function dateTH(date) { return new Intl.DateTimeFormat('th-TH', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' }).format(parseDate(date)); }
+function todayInBangkok() { return new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Bangkok', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date()); }
 
 export function normalizePlanningState(source) {
   const raw = source && typeof source === 'object' && !Array.isArray(source) ? source : {};
+  if (Array.isArray(raw.tasks) && raw.tasks.length > MAX_TASKS) throw new Error(`แผนงานรองรับไม่เกิน ${MAX_TASKS} กิจกรรม กรุณาแบ่งไฟล์ก่อนเปิด`);
   const rows = Array.isArray(raw.tasks) ? raw.tasks.slice(0, MAX_TASKS) : DEFAULT_TASKS;
   return {
-    version: 1, startDate: text(raw.startDate, '2026-11-23', 10),
+    version: 1, startDate: text(raw.startDate, '2026-11-23', 10), statusDate: text(raw.statusDate, todayInBangkok(), 10),
     tasks: rows.map((task, index) => ({
       id: text(task?.id, `T${index + 1}`, 20), name: text(task?.name, 'กิจกรรมใหม่', 180),
       duration: numericValue(task?.duration, 1),
@@ -256,7 +299,9 @@ export function normalizePlanningState(source) {
 
 /** Activity-on-node CPM with Finish-to-Start dependencies and calendar-day durations. */
 export function analyzeSchedule(state) {
-  parseDate(state?.startDate);
+  const start = parseDate(state?.startDate);
+  const statusDate = state?.statusDate ?? state?.startDate;
+  const status = parseDate(statusDate, 'วันที่ประเมินความก้าวหน้า');
   if (!Array.isArray(state.tasks) || !state.tasks.length || state.tasks.length > MAX_TASKS) throw new Error(`ต้องมีกิจกรรม 1–${MAX_TASKS} รายการ`);
   const byId = new Map();
   const tasks = state.tasks.map((task, index) => {
@@ -294,12 +339,32 @@ export function analyzeSchedule(state) {
   const weight = task => totalBudget > 0 ? task.budget : task.duration;
   const totalWeight = tasks.reduce((sum, task) => sum + weight(task), 0);
   const weightedProgress = tasks.reduce((sum, task) => sum + weight(task) * task.progress, 0) / totalWeight;
-  return { tasks, duration, totalBudget, weightedProgress, weightMode: totalBudget > 0 ? 'budget' : 'duration', startDate: state.startDate, endDate: offsetDate(state.startDate, duration - 1), criticalTaskIds: tasks.filter(task => task.critical).map(task => task.id) };
+  const elapsedDays = (status.getTime() - start.getTime()) / 86400000 + 1;
+  const plannedProgress = tasks.reduce((sum, task) => sum + weight(task) * Math.max(0, Math.min(1, (elapsedDays - task.es) / task.duration)) * 100, 0) / totalWeight;
+  // Enumerate only four connected paths: display three and indicate additional paths.
+  const paths = [];
+  function traceCritical(task, prefix = []) {
+    if (paths.length >= 4) return;
+    const path = [...prefix, task.id];
+    const next = task.successors.map(id => byId.get(id)).filter(successor => successor.critical && successor.es === task.ef);
+    if (!next.length) { if (task.ef === duration) paths.push(path); return; }
+    for (const successor of next) traceCritical(successor, path);
+  }
+  for (const task of order.filter(task => task.critical && task.es === 0)) traceCritical(task);
+  return { tasks, duration, totalBudget, weightedProgress, weightMode: totalBudget > 0 ? 'budget' : 'duration', startDate: state.startDate, endDate: offsetDate(state.startDate, duration - 1), criticalTaskIds: tasks.filter(task => task.critical).map(task => task.id),
+    statusDate, elapsedDays, plannedProgress, progressVariance: weightedProgress - plannedProgress, criticalPaths: paths.slice(0, 3), moreCriticalPaths: paths.length > 3, remainingCriticalTaskIds: tasks.filter(task => task.critical && task.progress < 100).map(task => task.id) };
 }
 
 function ganttHTML(result) {
   const marks = Array.from({ length: 6 }, (_, i) => `<span>${Math.round(result.duration * i / 5)}</span>`).join('');
-  return `<div class="wf-gantt-scroll"><div class="wf-gantt"><div class="wf-gantt-head"><span>กิจกรรม</span><div>${marks}</div></div>${result.tasks.map(task => `<div class="wf-gantt-row"><span title="${esc(task.name)}">${esc(task.id)} · ${esc(task.name)}</span><div class="wf-gantt-track"><div class="wf-gantt-bar ${task.critical ? 'wf-critical' : ''}" style="left:${task.es / result.duration * 100}%;width:${task.duration / result.duration * 100}%" title="${esc(`${task.name}: ${task.duration} วัน, float ${task.float} วัน`)}"><i style="width:${task.progress}%"></i><b>${task.duration} วัน</b></div></div></div>`).join('')}</div></div><div class="wf-legend"><span><i class="wf-critical-key"></i>กิจกรรมวิกฤต (Float = 0)</span><span><i class="wf-normal-key"></i>กิจกรรมที่มีเวลาสำรอง</span><span>สีเข้มในแถบ = ความก้าวหน้าที่กรอก</span></div>`;
+  const marker = result.elapsedDays > 0 && result.elapsedDays < result.duration ? `<span class="wf-status-line" style="left:${result.elapsedDays / result.duration * 100}%" title="สิ้นวันที่ประเมิน ${esc(dateTH(result.statusDate))}"></span>` : '';
+  return `<div class="wf-gantt-scroll"><div class="wf-gantt"><div class="wf-gantt-head"><span>กิจกรรม</span><div>${marks}</div></div>${result.tasks.map(task => `<div class="wf-gantt-row"><span title="${esc(task.name)}">${esc(task.id)} · ${esc(task.name)}</span><div class="wf-gantt-track"><div class="wf-gantt-bar ${task.critical ? 'wf-critical' : ''}" style="left:${task.es / result.duration * 100}%;width:${task.duration / result.duration * 100}%" title="${esc(`${task.name}: ${task.duration} วัน, float ${task.float} วัน`)}"><i style="width:${task.progress}%"></i><b>${task.duration} วัน</b></div>${marker}</div></div>`).join('')}</div></div><div class="wf-legend"><span><i class="wf-critical-key"></i>กิจกรรมวิกฤต (Float = 0)</span><span><i class="wf-normal-key"></i>กิจกรรมที่มีเวลาสำรอง</span><span><i class="wf-date-key"></i>สิ้นวันที่ประเมิน</span><span>สีเข้มในแถบ = ความก้าวหน้าที่กรอก</span></div>`;
+}
+
+function scheduleInsightHTML(result) {
+  const variance = Math.abs(result.progressVariance) < .005 ? 0 : result.progressVariance;
+  const pathMap = new Map(result.tasks.map(task => [task.id, task]));
+  return `<div class="wf-schedule-insights"><section class="wf-progress-panel"><div class="wf-insight-heading"><h3>ความก้าวหน้า ณ ${esc(dateTH(result.statusDate))}</h3><span class="wf-variance ${variance < 0 ? 'wf-behind' : variance > 0 ? 'wf-ahead' : ''}">${variance < 0 ? 'ต่ำกว่าแผน' : variance > 0 ? 'สูงกว่าแผน' : 'เท่ากับแผน'}${variance ? ` ${fmt(Math.abs(variance))} จุดเปอร์เซ็นต์` : ''}</span></div>${[['ตามแผน', result.plannedProgress, 'plan'], ['ผลงานที่กรอก', result.weightedProgress, 'actual']].map(([label, value, type]) => `<div class="wf-progress-row"><span>${label}</span><div class="wf-progress-track wf-progress-${type}" role="progressbar" aria-label="${label}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${value}"><i style="width:${value}%"></i></div><strong>${fmt(value)}%</strong></div>`).join('')}<p class="wf-caption">แผนกระจายน้ำหนักสม่ำเสมอภายในแต่ละกิจกรรม ถึงสิ้นวันที่ประเมิน · ส่วนต่างนี้ไม่ใช่จำนวนวันล่าช้า</p></section><section class="wf-critical-panel"><div class="wf-insight-heading"><h3>เส้นทางวิกฤตที่เชื่อมต่อกัน</h3><span>${result.remainingCriticalTaskIds.length} กิจกรรมวิกฤตยังไม่ครบ 100%</span></div>${result.criticalPaths.map(path => `<ol class="wf-critical-path" aria-label="ลำดับกิจกรรมในเส้นทางวิกฤต">${path.map(id => `<li><b>${esc(id)}</b><span>${esc(pathMap.get(id).name)}</span></li>`).join('')}</ol>`).join('')}${result.moreCriticalPaths ? '<p class="wf-caption">แสดง 3 เส้นทางแรก โครงการนี้มีเส้นทางวิกฤตเพิ่มเติม</p>' : ''}<p class="wf-caption">ลำดับตามความสัมพันธ์ของงาน การเปลี่ยนเปอร์เซ็นต์ผลงานไม่เปลี่ยนวันสิ้นสุดของแผนฐาน</p></section></div>`;
 }
 
 function mountPlanning(container, initialState, context) {
@@ -323,21 +388,23 @@ function mountPlanning(container, initialState, context) {
       const r = analyzeSchedule(state); errors.innerHTML = '';
       container.querySelector('[data-wf-summary]').innerHTML = card('ระยะเวลาโครงการ', r.duration, 'วัน') + card('วันเสร็จตามแผน', dateTH(r.endDate)) + card('งบประมาณรวม', money(r.totalBudget), 'บาท') + card('ความก้าวหน้าถ่วงน้ำหนัก', fmt(r.weightedProgress), '%', 'wf-emphasis');
       container.querySelector('[data-wf-chart]').innerHTML = ganttHTML(r);
+      container.querySelector('[data-wf-insights]').innerHTML = scheduleInsightHTML(r);
       container.querySelector('[data-wf-schedule-note]').textContent = `ถ่วงน้ำหนักด้วย${r.weightMode === 'budget' ? 'งบประมาณแต่ละกิจกรรม' : 'ระยะเวลา เนื่องจากงบประมาณทุกกิจกรรมเป็นศูนย์'} · กิจกรรมวิกฤต: ${r.criticalTaskIds.join(', ')} · จุด 0 คือวันเริ่มโครงการ`;
       r.tasks.forEach((task, i) => { const el = container.querySelector(`[data-wf-float="${i}"]`); if (el) { el.textContent = `${task.float} วัน`; el.classList.toggle('wf-critical-text', task.critical); } });
     } catch (e) {
       errors.innerHTML = errorHTML(e); container.querySelector('[data-wf-summary]').innerHTML = card('ตรวจแผนงาน', 'คำนวณไม่ได้', '', 'wf-warm');
       container.querySelector('[data-wf-chart]').innerHTML = '<div class="wf-empty">แก้ไขข้อมูลด้านบนเพื่อสร้างแผน Gantt</div>';
       container.querySelector('[data-wf-schedule-note]').textContent = '';
+      container.querySelector('[data-wf-insights]').innerHTML = '';
       container.querySelectorAll('[data-wf-float]').forEach(el => { el.textContent = '—'; });
     }
   }
   container.innerHTML = `<div class="wf-workspace"><div class="wf-notice"><b>แผน Gantt + Critical Path</b> · ใช้วันปฏิทิน ความสัมพันธ์ Finish-to-Start แบบไม่มี lag และไม่มีข้อจำกัดทรัพยากร</div>
     <div class="wf-stats" data-wf-summary aria-live="polite"></div><div data-wf-errors></div>
     <div class="wf-panel"><div class="wf-panel-head"><div><h3>กิจกรรมของโครงการ</h3><p>ใส่รหัสกิจกรรมก่อนหน้า คั่นด้วยจุลภาค เช่น T1,T2</p></div><div class="wf-actions"><button type="button" data-wf-action="csv" class="wf-button">ส่งออก CSV</button><button type="button" data-wf-action="add-task" class="wf-button wf-primary">+ เพิ่มกิจกรรม</button></div></div>
-    <label class="wf-date-label">วันเริ่มโครงการ${input('วันเริ่มโครงการ', state.startDate, 'type="date" data-wf-setting="startDate"')}</label>
+    <div class="wf-plan-dates"><label class="wf-date-label">วันเริ่มโครงการ${input('วันเริ่มโครงการ', state.startDate, 'type="date" data-wf-setting="startDate"')}</label><label class="wf-date-label">วันที่ประเมินความก้าวหน้า${input('วันที่ประเมินความก้าวหน้า', state.statusDate, 'type="date" data-wf-setting="statusDate"')}</label></div>
     <div class="wf-scroll"><table class="wf-table wf-planning-table"><thead><tr><th>รหัส</th><th>กิจกรรม</th><th>วัน</th><th>กิจกรรมก่อนหน้า</th><th>สำเร็จ %</th><th>งบประมาณ</th><th>Float</th><th></th></tr></thead><tbody data-wf-task-rows></tbody></table></div></div>
-    <div class="wf-panel"><div class="wf-panel-head"><div><h3>ภาพรวมแผนงาน</h3><p>ตำแหน่งแถบคำนวณจากกิจกรรมก่อนหน้าโดยอัตโนมัติ</p></div></div><div data-wf-chart></div><p class="wf-caption" data-wf-schedule-note></p></div>
+    <div data-wf-insights></div><div class="wf-panel"><div class="wf-panel-head"><div><h3>ภาพรวมแผนงาน</h3><p>ตำแหน่งแถบคำนวณจากกิจกรรมก่อนหน้าโดยอัตโนมัติ</p></div></div><div data-wf-chart></div><p class="wf-caption" data-wf-schedule-note></p></div>
     <label class="wf-notes-label">หมายเหตุของแผน<textarea data-wf-setting="notes" rows="3" maxlength="3000">${esc(state.notes)}</textarea></label>
   </div>`;
   renderRows(); refresh();
@@ -359,7 +426,7 @@ function mountPlanning(container, initialState, context) {
     else if (button.dataset.wfAction === 'csv') {
       try {
         const r = analyzeSchedule(state);
-        downloadCSV('construction-plan.csv', [['แผนงานแบบ CPM — วันปฏิทิน / FS ไม่มี lag'], ['หมายเหตุ', state.notes], ['วันเริ่ม', r.startDate], ['วันเสร็จ', r.endDate], ['ความก้าวหน้าถ่วงน้ำหนัก (%)', r.weightedProgress], [], ['รหัส', 'กิจกรรม', 'ระยะเวลา (วัน)', 'กิจกรรมก่อนหน้า', 'เริ่ม', 'เสร็จ', 'Float (วัน)', 'วิกฤต', 'ความก้าวหน้า (%)', 'งบประมาณ'], ...r.tasks.map(task => [task.id, task.name, task.duration, task.predecessors.join(','), offsetDate(state.startDate, task.es), offsetDate(state.startDate, task.ef - 1), task.float, task.critical ? 'ใช่' : 'ไม่ใช่', task.progress, task.budget])]);
+        downloadCSV('construction-plan.csv', [['แผนงานแบบ CPM — วันปฏิทิน / FS ไม่มี lag'], ['หมายเหตุ', state.notes], ['วันเริ่ม', r.startDate], ['วันเสร็จ', r.endDate], ['วันที่ประเมิน (สิ้นวัน)', r.statusDate], ['ความก้าวหน้าตามแผน (%)', r.plannedProgress], ['ความก้าวหน้าที่กรอก (%)', r.weightedProgress], ['ส่วนต่างผลงาน - แผน (จุดเปอร์เซ็นต์)', r.progressVariance], ...r.criticalPaths.map((path, i) => ['เส้นทางวิกฤต ' + (i + 1), path.join(' → ')]), [], ['รหัส', 'กิจกรรม', 'ระยะเวลา (วัน)', 'กิจกรรมก่อนหน้า', 'เริ่ม', 'เสร็จ', 'Float (วัน)', 'วิกฤต', 'ความก้าวหน้า (%)', 'งบประมาณ'], ...r.tasks.map(task => [task.id, task.name, task.duration, task.predecessors.join(','), offsetDate(state.startDate, task.es), offsetDate(state.startDate, task.ef - 1), task.float, task.critical ? 'ใช่' : 'ไม่ใช่', task.progress, task.budget])]);
         ctx.notify('ส่งออกแผนงาน CSV แล้ว');
       } catch (e) { ctx.notify(e.message); }
     }
@@ -370,8 +437,8 @@ function mountPlanning(container, initialState, context) {
     getReport: () => {
       try {
         const r = analyzeSchedule(state);
-        return `<section class="wf-report"><h2>แผนงานก่อสร้าง</h2><p>${esc(dateTH(r.startDate))} – ${esc(dateTH(r.endDate))} · ${r.duration} วันปฏิทิน<br>ความก้าวหน้าถ่วงน้ำหนักด้วย${r.weightMode === 'budget' ? 'งบประมาณ' : 'ระยะเวลา'} ${fmt(r.weightedProgress)}% · งบประมาณ ${money(r.totalBudget)} บาท</p><table><thead><tr><th>รหัส / กิจกรรม</th><th>ก่อนหน้า</th><th>วันเริ่ม</th><th>วันเสร็จ</th><th>Float</th><th>สำเร็จ</th><th>งบประมาณ</th></tr></thead><tbody>${r.tasks.map(task => `<tr><td>${esc(task.id)} · ${esc(task.name)}${task.critical ? ' [วิกฤต]' : ''}</td><td>${esc(task.predecessors.join(', '))}</td><td>${offsetDate(r.startDate, task.es)}</td><td>${offsetDate(r.startDate, task.ef - 1)}</td><td>${task.float} วัน</td><td>${fmt(task.progress)}%</td><td>${money(task.budget)}</td></tr>`).join('')}</tbody></table><p>วิธีคำนวณ: ES = max(EF ของกิจกรรมก่อนหน้า); EF = ES + ระยะเวลา; LF = min(LS ของกิจกรรมถัดไป); LS = LF − ระยะเวลา; Float = LS − ES. กิจกรรมวิกฤตมี Float = 0</p><p>ขอบเขต: วันปฏิทิน, Finish-to-Start, ไม่มี lag และไม่ปรับแผนตามข้อจำกัดทรัพยากร วันเสร็จเป็นวันสุดท้ายของกิจกรรม รวมวันเริ่ม</p><p>${esc(state.notes)}</p></section>`;
-      } catch (e) { return errorHTML(e); }
+        return `<section class="wf-report"><h2>แผนงานก่อสร้าง</h2><p>${esc(dateTH(r.startDate))} – ${esc(dateTH(r.endDate))} · ${r.duration} วันปฏิทิน<br>ความก้าวหน้าถ่วงน้ำหนักด้วย${r.weightMode === 'budget' ? 'งบประมาณ' : 'ระยะเวลา'} ${fmt(r.weightedProgress)}% · งบประมาณ ${money(r.totalBudget)} บาท</p><p>ประเมินถึงสิ้นวันที่ ${esc(dateTH(r.statusDate))}: ตามแผน ${fmt(r.plannedProgress)}% · ผลงานที่กรอก ${fmt(r.weightedProgress)}% · ส่วนต่าง ${r.progressVariance >= 0 ? '+' : ''}${fmt(r.progressVariance)} จุดเปอร์เซ็นต์</p><p>แผนกระจายน้ำหนักสม่ำเสมอภายในกิจกรรม ส่วนต่างเปอร์เซ็นต์ไม่ใช่จำนวนวันล่าช้า และไม่ปรับวันสิ้นสุดแผนฐานอัตโนมัติ</p><h3>เส้นทางวิกฤต</h3><ul>${r.criticalPaths.map(path => `<li>${esc(path.join(' → '))}</li>`).join('')}</ul>${r.moreCriticalPaths ? '<p>แสดง 3 เส้นทางแรก ยังมีเส้นทางวิกฤตเพิ่มเติม</p>' : ''}<table><thead><tr><th>รหัส / กิจกรรม</th><th>ก่อนหน้า</th><th>วันเริ่ม</th><th>วันเสร็จ</th><th>Float</th><th>สำเร็จ</th><th>งบประมาณ</th></tr></thead><tbody>${r.tasks.map(task => `<tr><td>${esc(task.id)} · ${esc(task.name)}${task.critical ? ' [วิกฤต]' : ''}</td><td>${esc(task.predecessors.join(', '))}</td><td>${offsetDate(r.startDate, task.es)}</td><td>${offsetDate(r.startDate, task.ef - 1)}</td><td>${task.float} วัน</td><td>${fmt(task.progress)}%</td><td>${money(task.budget)}</td></tr>`).join('')}</tbody></table><p>วิธีคำนวณ: ES = max(EF ของกิจกรรมก่อนหน้า); EF = ES + ระยะเวลา; LF = min(LS ของกิจกรรมถัดไป); LS = LF − ระยะเวลา; Float = LS − ES. กิจกรรมวิกฤตมี Float = 0</p><p>ขอบเขต: วันปฏิทิน, Finish-to-Start, ไม่มี lag และไม่ปรับแผนตามข้อจำกัดทรัพยากร วันเสร็จเป็นวันสุดท้ายของกิจกรรม รวมวันเริ่ม</p><p>${esc(state.notes)}</p></section>`;
+      } catch (e) { throw e; }
     },
     destroy: () => { container.removeEventListener('input', onInput); container.removeEventListener('click', onClick); },
   };
@@ -390,6 +457,7 @@ const isImageData = value => typeof value === 'string' && /^data:image\/(jpeg|pn
 
 export function normalizeInspectionState(source) {
   const raw = source && typeof source === 'object' && !Array.isArray(source) ? source : {};
+  if (Array.isArray(raw.items) && raw.items.length > MAX_ROWS) throw new Error(`แบบตรวจรองรับไม่เกิน ${MAX_ROWS} รายการ กรุณาแบ่งไฟล์ก่อนเปิด`);
   const rows = Array.isArray(raw.items) ? raw.items.slice(0, MAX_ROWS) : DEFAULT_INSPECTION.map((row, i) => ({ id: `I${i + 1}`, group: row[0], title: row[1], status: 'pending', note: '', photos: [] }));
   let count = 0; let total = 0;
   return {
@@ -451,7 +519,7 @@ function mountInspection(container, initialState, context) {
       const r = inspectionSummary(state);
       container.querySelector('[data-wf-summary]').innerHTML = card('รายการตรวจ', r.total, 'รายการ') + card('ผ่าน', r.pass, 'รายการ') + card('ต้องแก้ไข', r.fail, 'รายการ', r.fail ? 'wf-warm' : '') + card('ตรวจแล้ว', fmt(r.percent), '%', 'wf-emphasis');
       container.querySelector('[data-wf-errors]').innerHTML = '';
-    } catch (e) { container.querySelector('[data-wf-errors]').innerHTML = errorHTML(e); }
+    } catch (e) { container.querySelector('[data-wf-errors]').innerHTML = errorHTML(e); container.querySelector('[data-wf-summary]').innerHTML = card('ตรวจข้อมูล', 'สรุปไม่ได้', '', 'wf-warm'); }
   }
   function renderItems() {
     const visible = state.items.map((item, i) => ({ item, i })).filter(({ item }) => filter === 'all' || item.status === filter);
@@ -518,7 +586,7 @@ function mountInspection(container, initialState, context) {
       try {
         const r = inspectionSummary(state);
         return `<section class="wf-report"><h2>รายงานตรวจรับบ้านและอาคาร</h2><p>สถานที่: ${esc(state.property)}<br>ผู้ตรวจ: ${esc(state.inspector || 'ไม่ได้ระบุ')}</p><p>ทั้งหมด ${r.total} รายการ · ผ่าน ${r.pass} · ต้องแก้ไข ${r.fail} · ยังไม่ตรวจ ${r.pending} · ไม่เกี่ยวข้อง ${r.na}</p><p>ผลเป็นข้อมูลที่ผู้ตรวจกรอก ไม่ใช่ผลวิเคราะห์หรือใบรับรองความปลอดภัยของอาคาร</p>${state.items.map((item, index) => `<section class="wf-report-inspection"><h3>${index + 1}. ${esc(item.group)} · ${esc(item.title)}</h3><p><b>${esc(STATUS_LABEL[item.status])}</b> — ${esc(item.note || 'ไม่มีบันทึกเพิ่มเติม')}</p>${item.photos.map((photo, i) => `<img src="${photo}" alt="หลักฐาน ${index + 1} ภาพ ${i + 1}" class="wf-report-photo">`).join('')}</section>`).join('')}</section>`;
-      } catch (e) { return errorHTML(e); }
+      } catch (e) { throw e; }
     },
     destroy: () => { destroyed = true; container.removeEventListener('input', onInput); container.removeEventListener('change', onChange); container.removeEventListener('click', onClick); },
   };

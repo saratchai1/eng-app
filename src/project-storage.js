@@ -13,6 +13,7 @@ export function normalizeDraft(value, toolId) {
   return {
     schemaVersion: 1, toolId, id: validId(value.id), name: value.name.slice(0, 180),
     createdAt: validDate(value.createdAt), updatedAt: validDate(value.updatedAt), data: value.data,
+    writerId: validId(value.writerId), baseSavedAt: validDate(value.baseSavedAt),
   };
 }
 
@@ -21,12 +22,14 @@ export function makeDraftRecord(record, now = new Date().toISOString()) {
     schemaVersion: 1, toolId: record.toolId, id: validId(record.id),
     name: typeof record.name === 'string' ? record.name.slice(0, 180) : '',
     createdAt: validDate(record.createdAt) || now, updatedAt: now, data: record.data,
+    writerId: validId(record.writerId), baseSavedAt: validDate(record.baseSavedAt),
   };
 }
 
 /**
  * Explicit imports/new examples ignore other drafts. Saved projects may resume a
- * newer draft only when its ID matches that same saved project and tool.
+ * newer draft only when its ID matches that same saved project and tool, and its
+ * known saved base is still current. Legacy drafts have no known saved base.
  */
 export function resolveProjectForTool(toolId, { project = null, draft = null, saved = [], now = new Date().toISOString() } = {}) {
   const candidate = normalizeDraft(draft, toolId);
@@ -37,14 +40,21 @@ export function resolveProjectForTool(toolId, { project = null, draft = null, sa
     name: typeof record.name === 'string' ? record.name.slice(0, 180) : '', data: record.data,
     createdAt: validDate(identity?.createdAt) || validDate(record.createdAt) || now,
     updatedAt: validDate(record.updatedAt),
+    writerId: validId(record.writerId), baseSavedAt: validDate(record.baseSavedAt),
   });
+  const staleBase = (candidate, identity) => Boolean(candidate?.baseSavedAt && identity && timestamp(candidate.baseSavedAt) !== timestamp(identity.updatedAt));
   if (project) {
     const identity = savedMatch(project.id);
-    const canResume = identity && candidate?.id === identity.id && timestamp(candidate.updatedAt) > timestamp(project.updatedAt);
-    return { project: view(canResume ? candidate : project, identity), fromDraft: Boolean(canResume) };
+    const selected = identity || project;
+    const canResume = identity && candidate?.id === identity.id && !staleBase(candidate, identity) && timestamp(candidate.updatedAt) > timestamp(selected.updatedAt);
+    return { project: view(canResume ? candidate : selected, identity), fromDraft: Boolean(canResume) };
   }
   if (!candidate) return { project: null, fromDraft: false };
   const identity = savedMatch(candidate.id);
+  if (staleBase(candidate, identity)) {
+    const suffix = ' — ร่างจากงานรุ่นก่อน';
+    return { project: view({ ...candidate, name: candidate.name.slice(0, 180 - suffix.length) + suffix, createdAt: now, baseSavedAt: null }), fromDraft: true };
+  }
   if (identity && timestamp(identity.updatedAt) >= timestamp(candidate.updatedAt)) {
     return { project: view(identity, identity), fromDraft: false };
   }
@@ -64,7 +74,7 @@ function readPointer(storage, toolId) {
 }
 
 /** An explicit ID reads that saved project's draft; omission resumes this tool's last work. */
-export function readToolDraft(storage, toolId, projectId = undefined) {
+export function readToolDraft(storage, toolId, projectId = undefined, saved = []) {
   const pointer = projectId === undefined ? readPointer(storage, toolId) : null;
   const expectedId = projectId === undefined ? pointer?.id ?? null : validId(projectId);
   const scoped = normalizeDraft(readJSON(storage, draftStorageKey(toolId, expectedId)), toolId);
@@ -73,7 +83,54 @@ export function readToolDraft(storage, toolId, projectId = undefined) {
     const legacy = normalizeDraft(readJSON(storage, key), toolId);
     if (legacy && (projectId === undefined && !pointer || legacy.id === expectedId)) return legacy;
   }
+  // A clean saved project needs only a small last-work pointer, not a second
+  // complete copy of its images and data in draft storage.
+  const record = Array.isArray(saved) ? saved.find(item => item && item.toolId === toolId && item.id === expectedId) : null;
+  if (record) return normalizeDraft(record, toolId);
   return null;
+}
+
+export function persistToolPointer(storage, toolId, projectId) {
+  return persistJSON(storage, draftPointerKey(toolId), { schemaVersion: 1, toolId, id: validId(projectId) });
+}
+
+/** Call only AFTER the saved-project list has been persisted successfully. */
+export function finalizeSavedDraft(storage, record, previousId = record.id) {
+  const previousCleared = removeToolDraft(storage, record.toolId, previousId);
+  const currentCleared = previousId === record.id || removeToolDraft(storage, record.toolId, record.id);
+  const pointerSaved = persistToolPointer(storage, record.toolId, record.id);
+  return previousCleared && currentCleared && pointerSaved;
+}
+
+/**
+ * Remove only this tab's old draft, or the exact draft it previously adopted.
+ * Ownership, rather than payload equality, also covers edits still awaiting the
+ * autosave timer. A later draft from another writer always remains recoverable.
+ */
+export function removeOwnedDraft(storage, toolId, projectId, { writerId = null, resumedWriterId = null, resumedUpdatedAt = null } = {}) {
+  const id = validId(projectId);
+  const writer = validId(writerId), adoptedWriter = validId(resumedWriterId), adoptedAt = validDate(resumedUpdatedAt);
+  const keys = [draftStorageKey(toolId, id), legacyToolDraftKey(toolId), LEGACY_DRAFT_KEY];
+  const readStored = key => {
+    const raw = storage.getItem(key);
+    try { return normalizeDraft(JSON.parse(raw), toolId); } catch { return null; }
+  };
+  try {
+    let removed = false;
+    for (const key of keys) {
+      const draft = readStored(key);
+      if (!draft || draft.id !== id) continue;
+      const owned = writer && draft.writerId === writer;
+      const adopted = adoptedAt && draft.writerId === adoptedWriter && draft.updatedAt === adoptedAt;
+      if (owned || adopted) { storage.removeItem(key); removed = true; }
+    }
+    // Keep the pointer if any other writer still has a draft of this identity.
+    if (removed && !keys.some(key => readStored(key)?.id === id)) {
+      const pointer = readPointer(storage, toolId);
+      if (pointer?.id === id) storage.removeItem(draftPointerKey(toolId));
+    }
+    return true;
+  } catch { return false; }
 }
 
 /** Save data before moving the last-work pointer. A partial/quota failure is reported. */
@@ -81,7 +138,7 @@ export function persistToolDraft(storage, value) {
   const draft = normalizeDraft(value, value?.toolId);
   if (!draft) return false;
   if (!persistJSON(storage, draftStorageKey(draft.toolId, draft.id), draft)) return false;
-  if (!persistJSON(storage, draftPointerKey(draft.toolId), { schemaVersion: 1, toolId: draft.toolId, id: draft.id })) return false;
+  if (!persistToolPointer(storage, draft.toolId, draft.id)) return false;
   // Remove only a migrated draft of this same identity. Other legacy work remains recoverable.
   for (const key of [legacyToolDraftKey(draft.toolId), LEGACY_DRAFT_KEY]) {
     const legacy = normalizeDraft(readJSON(storage, key), draft.toolId);
