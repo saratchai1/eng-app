@@ -32,10 +32,13 @@ test('report styles embed every local stylesheet and discard imports', async () 
     urls.push(String(url));
     return { ok: true, text: async () => String(url).endsWith('/styles.css') ? '@import url("./specials.css"); body{color:green}' : '/* embedded */' };
   });
-  assert.equal(urls.length, 10);
+  assert.equal(urls.length, 13);
   assert.ok(urls.every(url => /\/src\/[a-z-]+\.css$/.test(url)));
   assert.ok(urls.some(url => url.endsWith('/design-options.css')));
   assert.ok(urls.some(url => url.endsWith('/technical-diagrams.css')));
+  assert.ok(urls.some(url => url.endsWith('/review-register.css')));
+  assert.ok(urls.some(url => url.endsWith('/revisions.css')));
+  assert.ok(urls.some(url => url.endsWith('/review-workspace.css')));
   assert.doesNotMatch(styles, /@import/);
   assert.match(styles, /body\{color:green\}/);
 });
