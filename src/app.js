@@ -4,15 +4,17 @@ import {quantityTools} from './quantities.js';
 import {mountWorkflow} from './workflows.js';
 import {mountSpecial} from './specials.js';
 import {icon,sketch} from './visuals.js';
-import {engineeringFigure} from './calculation-diagrams.js';
+import {engineeringFigure,engineeringFigureCaption} from './calculation-diagrams.js';
 import {escapeHTML as e,format as f,download,csv,today,uniqueId} from './utils.js';
 import {makeDraftRecord,resolveProjectForTool,persistJSON,readToolDraft,persistToolDraft,removeToolDraft,persistToolPointer,finalizeSavedDraft,removeOwnedDraft} from './project-storage.js';
 import {captureBaseline,restoreBaseline,comparisonMarkup} from './comparison.js';
 import {studioHeader,studioFooter,studioHomeLead,projectSignals,projectSignalMarkup,calculationOverview} from './studio.js';
 import {normalizeDocument,documentEditorMarkup,readDocumentEditor,documentSummaryMarkup,documentCoverMarkup,documentReviewState,invalidateDocumentReview} from './document-control.js';
 import {mountSensitivity} from './sensitivity.js';
+import {mountDesignOptions} from './design-options.js';
+import {indexReportContent,reportNavigationMarkup,mountReportReader,loadReportStyles,standaloneReportHTML} from './report-reader.js';
 
-const APP_VERSION='0.3';
+const APP_VERSION='0.4';
 const SESSION_WRITER_ID=uniqueId();
 
 const app=document.querySelector('#app');
@@ -28,15 +30,18 @@ favorites=favorites.filter(id=>catalog.some(t=>t.id===id));
 let filters={search:'',category:'all',favorites:false};
 let projectFilters={search:'',sort:'updated'};
 let modalReturnFocus=null;
+let modalCleanup=null;
 let mounted=null,current=null,draftTimer=null,toastTimer=null,storeErrorShown=false;
 
 function showModal(markup){
+ modalCleanup?.();modalCleanup=null;
  const root=document.querySelector('#modal-root');
  if(!root.firstElementChild)modalReturnFocus=document.activeElement;
  root.innerHTML=markup;app.inert=true;document.body.classList.add('modal-open');
  return root;
 }
 function closeModal(){
+ modalCleanup?.();modalCleanup=null;
  document.querySelector('#modal-root').innerHTML='';app.inert=false;document.body.classList.remove('modal-open','printing-report');
  document.querySelector('#print-root').innerHTML='';
  if(modalReturnFocus?.isConnected)modalReturnFocus.focus({preventScroll:true});modalReturnFocus=null;
@@ -101,6 +106,7 @@ function renderTool(toolId,project=null){
    documentHost.querySelectorAll('[data-document-review]').forEach(el=>{el.checked=false;});
    refreshDocumentSummary();
   };
+  if(inner.importAdjusted)invalidateReview();
   const metadataHandler=event=>{
    if(!event.target.matches('[data-document-field],[data-document-review],[data-document-review-note]'))return;
    documentInfo=readDocumentEditor(documentHost);
@@ -123,14 +129,15 @@ function calculationStepsMarkup(result,report=false){
  return `<${report?'section':'details'} class="calculation-steps" ${report?'':'open'}>${report?'<h3>ที่มาของผลลัพธ์และวิธีคำนวณ</h3>':`<summary>${icon('book')} ที่มาของผลลัพธ์และวิธีคำนวณ</summary>`}<div class="steps-content">${result.steps.map((step,i)=>`<div class="formula-step"><span class="step-index">${String(i+1).padStart(2,'0')}</span><div><h4>${e(step.title)}</h4><code>${e(step.formula)}</code>${step.substitution?`<p class="substitution">${e(step.substitution)}</p>`:''}<strong>${e(step.result)}</strong></div></div>`).join('')}</div></${report?'section':'details'}>`;
 }
 function mountCalculator(host,def,initial){
- let input=normalizeInputs(def,initial),result=null,error=null,sensitivity=null;
+ let input=normalizeInputs(def,initial),result=null,error=null,sensitivity=null,optionsDesk=null;
  let baseline=restoreBaseline(def,initial?._comparison);
  const fields=def.inputGroups.flatMap(group=>group.fields);
- const views=[['overview','ผลคำนวณ','chart'],['compare','เปรียบเทียบ A/B','layers'],['sensitivity','ศึกษาความไว','ruler'],['methods','วิธีคำนวณ','book']];
- host.innerHTML=`<div class="calc-grid"><div class="input-panel"><div class="panel-title"><h2>${icon('ruler')} ข้อมูลที่ใช้คำนวณ</h2><span>INPUTS / SI</span></div><form id="calc-form" novalidate>${def.inputGroups.map((group,groupIndex)=>`<fieldset><legend><span class="input-group-number">${String(groupIndex+1).padStart(2,'0')}</span>${e(group.title)}</legend><div class="field-grid">${group.fields.map(field=>`<label class="field"><span>${e(field.label)}</span>${field.type==='select'?`<select data-field="${e(field.key)}" aria-label="${e(field.label)}">${field.options.map(option=>`<option value="${e(option.value)}" ${input[field.key]===option.value?'selected':''}>${e(option.label)}</option>`).join('')}</select>`:`<div class="number-input"><input type="number" data-field="${e(field.key)}" value="${e(typeof input[field.key]==='number'?input[field.key]:'')}" min="${e(field.min??'')}" max="${e(field.max??'')}" step="${e(field.step??'any')}" inputmode="decimal" required aria-label="${e(field.label)}"><span>${e(field.unit||'')}</span></div>`}</label>`).join('')}</div></fieldset>`).join('')}<div class="form-tip">${icon('info')} ปรับข้อมูลเพื่อคำนวณสด · Ctrl / ⌘ + S บันทึกงาน</div><button type="button" class="button light mobile-result-jump" data-action="view-results">ดูผลการคำนวณ ↓</button></form></div><div class="result-panel"><div class="workspace-subnav" role="tablist" aria-label="มุมมองการวิเคราะห์">${views.map(([id,label,art],i)=>`<button type="button" role="tab" id="calc-tab-${id}" data-calc-tab="${id}" aria-selected="${i===0}" aria-controls="calc-view-${id}" tabindex="${i===0?0:-1}">${icon(art)}<span>${label}</span></button>`).join('')}</div><div class="workspace-view" id="calc-view-overview" role="tabpanel" aria-labelledby="calc-tab-overview"><div id="calc-result" aria-live="polite"></div></div><div class="workspace-view" id="calc-view-compare" role="tabpanel" aria-labelledby="calc-tab-compare" hidden><div id="calc-comparison"></div></div><div class="workspace-view" id="calc-view-sensitivity" role="tabpanel" aria-labelledby="calc-tab-sensitivity" hidden><div id="calc-sensitivity"></div></div><div class="workspace-view" id="calc-view-methods" role="tabpanel" aria-labelledby="calc-tab-methods" hidden><div id="calc-methods"></div></div></div></div>`;
+ const views=[['overview','ผลคำนวณ','chart'],['compare','ทางเลือกของแบบ','layers'],['sensitivity','ศึกษาความไว','ruler'],['methods','วิธีคำนวณ','book']];
+ host.innerHTML=`<div class="calc-grid"><div class="input-panel"><div class="panel-title"><h2>${icon('ruler')} ข้อมูลที่ใช้คำนวณ</h2><span>INPUTS / SI</span></div><form id="calc-form" novalidate>${def.inputGroups.map((group,groupIndex)=>`<fieldset><legend><span class="input-group-number">${String(groupIndex+1).padStart(2,'0')}</span>${e(group.title)}</legend><div class="field-grid">${group.fields.map(field=>`<label class="field"><span>${e(field.label)}</span>${field.type==='select'?`<select data-field="${e(field.key)}" aria-label="${e(field.label)}">${field.options.map(option=>`<option value="${e(option.value)}" ${input[field.key]===option.value?'selected':''}>${e(option.label)}</option>`).join('')}</select>`:`<div class="number-input"><input type="number" data-field="${e(field.key)}" value="${e(typeof input[field.key]==='number'?input[field.key]:'')}" min="${e(field.min??'')}" max="${e(field.max??'')}" step="${e(field.step??'any')}" inputmode="decimal" required aria-label="${e(field.label)}"><span>${e(field.unit||'')}</span></div>`}</label>`).join('')}</div></fieldset>`).join('')}<div class="form-tip">${icon('info')} ปรับข้อมูลเพื่อคำนวณสด · Ctrl / ⌘ + S บันทึกงาน</div><button type="button" class="button light mobile-result-jump" data-action="view-results">ดูผลการคำนวณ ↓</button></form></div><div class="result-panel"><div class="workspace-subnav" role="tablist" aria-label="มุมมองการวิเคราะห์">${views.map(([id,label,art],i)=>`<button type="button" role="tab" id="calc-tab-${id}" data-calc-tab="${id}" aria-selected="${i===0}" aria-controls="calc-view-${id}" tabindex="${i===0?0:-1}">${icon(art)}<span>${label}</span></button>`).join('')}</div><div class="workspace-view" id="calc-view-overview" role="tabpanel" aria-labelledby="calc-tab-overview"><div id="calc-result" aria-live="polite"></div></div><div class="workspace-view" id="calc-view-compare" role="tabpanel" aria-labelledby="calc-tab-compare" hidden><div class="comparison-view-tools"><span>DESIGN REVIEW / OPTIONS</span><button type="button" class="button light compact" data-comparison-expand aria-pressed="false">${icon('external')} ขยายพื้นที่เปรียบเทียบ</button></div><div id="calc-options"></div><details class="baseline-details"><summary>เปรียบเทียบค่าฐาน A กับค่าปัจจุบัน</summary><div id="calc-comparison"></div></details></div><div class="workspace-view" id="calc-view-sensitivity" role="tabpanel" aria-labelledby="calc-tab-sensitivity" hidden><div id="calc-sensitivity"></div></div><div class="workspace-view" id="calc-view-methods" role="tabpanel" aria-labelledby="calc-tab-methods" hidden><div id="calc-methods"></div></div></div></div>`;
  const form=host.querySelector('form'),resultEl=host.querySelector('#calc-result'),comparisonEl=host.querySelector('#calc-comparison'),methodsEl=host.querySelector('#calc-methods');
  function showView(id,{focus=false}={}){
   if(!views.some(view=>view[0]===id))return;
+  if(id!=='compare'){host.querySelector('.calc-grid').classList.remove('comparison-expanded');const expand=host.querySelector('[data-comparison-expand]');expand.setAttribute('aria-pressed','false');expand.innerHTML=icon('external')+' ขยายพื้นที่เปรียบเทียบ';}
   host.querySelectorAll('[role="tab"]').forEach(button=>{const active=button.dataset.calcTab===id;button.setAttribute('aria-selected',String(active));button.tabIndex=active?0:-1;if(active&&focus)button.focus();});
   host.querySelectorAll('[role="tabpanel"]').forEach(panel=>{panel.hidden=panel.id!=='calc-view-'+id;});
  }
@@ -145,6 +152,7 @@ function mountCalculator(host,def,initial){
   comparisonEl.innerHTML=comparisonMarkup(def,baseline,input,{valid:!error});
   methodsEl.innerHTML=assumptionsMarkup(def)+(result?calculationStepsMarkup(result,true):'<p class="studio-method-error">แก้ข้อมูลให้ถูกต้องเพื่อดูการแทนค่าและผลลัพธ์ของแต่ละขั้น</p>');
   sensitivity?.refresh();
+  optionsDesk?.refresh();
  }
  const handler=event=>{const el=event.target;if(!el.matches('[data-field]'))return;input[el.dataset.field]=el.tagName==='SELECT'?el.value:el.value.trim()===''?null:Number(el.value);update();onChange();};
  const changeHandler=event=>{if(event.target.tagName==='SELECT')handler(event);};
@@ -165,7 +173,11 @@ function mountCalculator(host,def,initial){
    comparisonEl.querySelector('[data-compare="'+(action==='clear'?'capture':action)+'"]')?.focus({preventScroll:true});
   }catch(err){notify(err.message);}
  };
- const tabHandler=event=>{const button=event.target.closest('[data-calc-tab]');if(button)showView(button.dataset.calcTab);};
+ const tabHandler=event=>{
+  const expand=event.target.closest('[data-comparison-expand]');
+  if(expand){const expanded=host.querySelector('.calc-grid').classList.toggle('comparison-expanded');expand.setAttribute('aria-pressed',String(expanded));expand.innerHTML=icon(expanded?'ruler':'external')+(expanded?' แสดงข้อมูลเข้า':' ขยายพื้นที่เปรียบเทียบ');return;}
+  const button=event.target.closest('[data-calc-tab]');if(button)showView(button.dataset.calcTab);
+ };
  const tabKeyHandler=event=>{
   if(!event.target.matches('[role="tab"]'))return;
   const index=views.findIndex(view=>view[0]===event.target.dataset.calcTab);
@@ -174,22 +186,24 @@ function mountCalculator(host,def,initial){
  };
  form.addEventListener('input',handler);form.addEventListener('change',changeHandler);form.addEventListener('submit',submitHandler);comparisonEl.addEventListener('click',compareHandler);host.addEventListener('click',tabHandler);host.addEventListener('keydown',tabKeyHandler);update();
  sensitivity=mountSensitivity(host.querySelector('#calc-sensitivity'),def,{getInputs:()=>input,onApply:({fieldKey,value})=>{input[fieldKey]=value;const field=form.querySelector('[data-field="'+fieldKey+'"]');if(field)field.value=value;update();onChange();},notify,initialSettings:initial?._sensitivity,onStudyChange:()=>onChange()});
+ optionsDesk=mountDesignOptions(host.querySelector('#calc-options'),def,{getInputs:()=>input,onApply:({inputs,label})=>{input={...inputs};for(const field of form.querySelectorAll('[data-field]'))field.value=input[field.dataset.field]??'';update();onChange();notify('นำข้อมูลจาก “'+label+'” มาใช้แล้ว');},onChange,notify,initialState:initial?._options});
  if(initial?._comparison&&!baseline)notify('ค่า A ในไฟล์เดิมไม่ตรงกับขอบเขตรุ่นนี้ กรุณาบันทึกค่า A ใหม่');
  return {
-  getState:()=>({...input,...(baseline?{_comparison:baseline}:{}),_sensitivity:sensitivity.getSettings()}),
+  importAdjusted:optionsDesk.importAdjusted,
+  getState:()=>({...input,...(baseline?{_comparison:baseline}:{}),_sensitivity:sensitivity.getSettings(),_options:optionsDesk.getState()}),
   getAssessment:()=>result?{pass:(result.checks||[]).filter(c=>c.pass===true).length,fail:(result.checks||[]).filter(c=>c.pass===false).length,unassessed:(result.checks||[]).filter(c=>c.pass!==true&&c.pass!==false).length}:null,
   showResults:()=>{showView('overview');host.querySelector('.workspace-subnav').scrollIntoView({behavior:'smooth',block:'start'});},
   getReport:()=>{
    if(error)throw new Error(error);
-   return `<h2>${e(def.title)}</h2><table><thead><tr><th>ข้อมูลเข้า</th><th>ค่า</th><th>หน่วย</th></tr></thead><tbody>${fields.map(field=>`<tr><td>${e(field.label)}</td><td>${e(field.type==='select'?(field.options.find(option=>option.value===input[field.key])?.label||String(input[field.key])):f(input[field.key],5))}</td><td>${e(field.unit||'')}</td></tr>`).join('')}</tbody></table>${resultMarkup(result,def,input,true)}${comparisonMarkup(def,baseline,input,{report:true})}${sensitivity.getReport()}<h3>สมมติฐาน</h3><ul>${def.assumptions.map(x=>`<li>${e(x)}</li>`).join('')}</ul><h3>เอกสารอ้างอิง</h3>${(def.references||[]).map(ref=>`<p>${e(ref.label)}<br>${e(ref.url)}</p>`).join('')}`;
+   return `<h2>${e(def.title)}</h2><table><thead><tr><th>ข้อมูลเข้า</th><th>ค่า</th><th>หน่วย</th></tr></thead><tbody>${fields.map(field=>`<tr><td>${e(field.label)}</td><td>${e(field.type==='select'?(field.options.find(option=>option.value===input[field.key])?.label||String(input[field.key])):f(input[field.key],5))}</td><td>${e(field.unit||'')}</td></tr>`).join('')}</tbody></table>${resultMarkup(result,def,input,true)}${comparisonMarkup(def,baseline,input,{report:true})}${optionsDesk.getReport()}${sensitivity.getReport()}<h3>สมมติฐาน</h3><ul>${def.assumptions.map(x=>`<li>${e(x)}</li>`).join('')}</ul><h3>เอกสารอ้างอิง</h3>${(def.references||[]).map(ref=>`<p>${e(ref.label)}<br>${e(ref.url)}</p>`).join('')}`;
   },
-  destroy:()=>{sensitivity?.destroy();form.removeEventListener('input',handler);form.removeEventListener('change',changeHandler);form.removeEventListener('submit',submitHandler);comparisonEl.removeEventListener('click',compareHandler);host.removeEventListener('click',tabHandler);host.removeEventListener('keydown',tabKeyHandler);}
+  destroy:()=>{sensitivity?.destroy();optionsDesk?.destroy();form.removeEventListener('input',handler);form.removeEventListener('change',changeHandler);form.removeEventListener('submit',submitHandler);comparisonEl.removeEventListener('click',compareHandler);host.removeEventListener('click',tabHandler);host.removeEventListener('keydown',tabKeyHandler);}
  };
 }
 function resultMarkup(result,def,input,report=false){
  return `<div class="result-heading"><h2>ผลการคำนวณ</h2><span class="calculation-label">${icon('calculator')} คำนวณจากข้อมูลที่กรอก</span></div><div class="summary-grid">${result.summary.map(item=>`<div class="metric ${item.tone||'neutral'}"><span>${e(item.label)}</span><strong>${item.value===null?'ไม่ประเมิน':e(f(item.value,item.digits??2))}</strong><small>${e(item.unit||'')}</small></div>`).join('')}</div><div class="calculation-figure"><div class="figure-label">${e(def.id==='retaining-wall'?'หน้าตัดกำแพงและระดับน้ำ':def.id==='footing'?'การสัมผัสดินใต้ฐานราก':'ภาพร่างประกอบการคำนวณ')}<small>ภาพสื่อสารแนวคิด</small></div>${calculationFigure(def.id,input,result.values)}<span class="figure-caption">${e(figureCaption(def.id,input))}</span></div>${result.checks?.length?`<div class="check-panel"><h3>รายการที่ตรวจในแบบจำลอง</h3>${result.checks.map(check=>`<div class="check-row ${check.pass===true?'pass':check.pass===false?'fail':'unassessed'}"><span class="check-icon">${icon(check.pass===true?'check':'info')}</span><div><strong>${e(check.label)}</strong><p>${e(check.detail)}</p></div><span class="check-status">${check.pass===true?'ผ่าน':check.pass===false?'ไม่ผ่าน':'ไม่ประเมิน'}</span></div>`).join('')}</div>`:''}${result.table?`<div class="result-table table-scroll"><table><thead><tr>${result.table.headers.map(x=>`<th>${e(x)}</th>`).join('')}</tr></thead><tbody>${result.table.rows.map(row=>`<tr>${row.map(x=>`<td>${e(x)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`:''}${report?calculationStepsMarkup(result,true):''}${result.notes?.length?`<aside class="result-notes">${icon('info')}<div>${result.notes.map(x=>`<p>${e(x)}</p>`).join('')}</div></aside>`:''}`;
 }
-function figureCaption(id,p){if(id==='retaining-wall')return `H = ${f(p.height)} m เหนือหลังฐาน · B = ${f(p.width)} m · ระดับน้ำวัดจากใต้ฐาน`;if(id==='rc-beam')return `b = ${f(p.b)} mm · d = ${f(p.d)} mm · ${f(p.count,0)} DB ${f(p.diameter)} mm`;if(id==='rc-slab')return `แถบพื้น 1,000 mm · d = ${f(p.d)} mm · DB ${f(p.diameter)} @ ${f(p.spacing)} mm`;if(id==='footing')return `B × L = ${f(p.width)} × ${f(p.length)} m · N = ${f(p.normal)} kN · M = ${f(p.moment)} kN·m`;return 'ภาพร่างไม่ใช่แบบก่อสร้างและไม่ได้อิงมาตราส่วน';}
+function figureCaption(id,p){return engineeringFigureCaption(id,p);}
 function calculationFigure(id,p,v){return engineeringFigure(id,p,v,catalog.find(t=>t.id===id)?.art||'beam');}
 
 function saveProject(){
@@ -233,10 +247,22 @@ function projectReport(){
 }
 function printProject(){
  try{
-  const content=projectReport();
-  showModal(`<div class="modal-backdrop"><section class="modal report-modal" role="dialog" aria-modal="true" aria-label="ตัวอย่างรายงาน"><div class="report-toolbar"><div><strong>ตัวอย่างรายงาน</strong><p>ตรวจข้อมูล แล้วเลือกพิมพ์หรือ Save as PDF</p></div><button class="button primary compact" data-action="print-confirm">${icon('print')} พิมพ์ / บันทึก PDF</button><button class="icon-button" data-action="close-modal" aria-label="ปิดตัวอย่างรายงาน">${icon('close')}</button></div><div class="report-preview">${content}</div></section></div>`);
+  const {content,sections}=indexReportContent(projectReport());
+  showModal(`<div class="modal-backdrop"><section class="modal report-modal report-reader" role="dialog" aria-modal="true" aria-label="ตัวอย่างรายงาน"><div class="report-toolbar"><div><strong>รายงานสำหรับตรวจทาน</strong><p>อ่านตามสารบัญ · ตรวจข้อมูลก่อนส่งต่อ</p></div><button class="button light compact" data-action="report-html">${icon('download')} ดาวน์โหลด HTML</button><button class="button primary compact" data-action="print-confirm">${icon('print')} พิมพ์ / บันทึก PDF</button><button class="icon-button" data-action="close-modal" aria-label="ปิดตัวอย่างรายงาน">${icon('close')}</button></div><div class="report-reader-layout">${reportNavigationMarkup(sections)}<div class="report-preview" tabindex="0" aria-label="เนื้อหารายงาน">${content}</div></div></section></div>`);
+  modalCleanup=mountReportReader(document.querySelector('.report-reader'));
   document.querySelector('[data-action="print-confirm"]').focus();
  }catch(error){notify('ยังพิมพ์ผลไม่ได้: '+error.message);}
+}
+async function downloadReportHTML(button){
+ if(button.disabled)return;
+ button.disabled=true;
+ try{
+  const report=indexReportContent(projectReport()),title=document.querySelector('#project-name').value||current.name,toolId=current.tool.id;
+  const styles=await loadReportStyles();
+  download(`engapp-report-${toolId}-${new Date().toISOString().slice(0,10)}.html`,standaloneReportHTML({title,...report,styles}),'text/html;charset=utf-8');
+  notify('ดาวน์โหลดรายงาน HTML แล้ว เปิดอ่านออฟไลน์หรือส่งไฟล์ให้ผู้ตรวจได้');
+ }catch(error){notify('ส่งออกรายงานไม่ได้: '+error.message);}
+ finally{button.disabled=false;}
 }
 function preparePrint(){
  document.body.classList.remove('printing-report');document.querySelector('#print-root').innerHTML='';
@@ -314,7 +340,7 @@ document.addEventListener('click',event=>{
  const confirmDelete=event.target.closest('[data-confirm-delete]');if(confirmDelete){const id=confirmDelete.dataset.confirmDelete;saved=readSavedProjects();const removed=saved.find(x=>x.id===id);const next=saved.filter(x=>x.id!==id);if(write(KEYS.projects,next)){saved=next;const draftCleared=!removed||clearDraft(removed.toolId,id);closeModal();renderProjects();notify(draftCleared?'ลบงานแล้ว':'ลบงานที่บันทึกแล้ว แต่ล้างสำรองชั่วคราวไม่ได้');}return;}
  const button=event.target.closest('[data-action]');if(!button)return;
  const action=button.dataset.action;
- if(action==='command')openCommandPalette();else if(action==='save')saveProject();else if(action==='view-results'){mounted?.showResults?.();}else if(action==='duplicate')duplicateProject();else if(action==='clear-project-search'){projectFilters.search='';const search=document.querySelector('#project-search');if(search){search.value='';search.focus();}renderProjectCards();}else if(action==='export')exportProject();else if(action==='import')importProject();else if(action==='print')printProject();else if(action==='print-confirm')window.print();else if(action==='projects')location.hash='projects';else if(action==='favorites'){filters.favorites=!filters.favorites;renderHome();}else if(action==='clear-filter'){filters={search:'',category:'all',favorites:false};renderHome();}else if(action==='about')about();else if(action==='close-modal')closeModal();else if(action==='reset')reset();else if(action==='confirm-reset'){const id=current.tool.id;const projectId=current.id;closeModal();cleanup({save:false});current=null;const cleared=clearDraft(id,projectId);renderTool(id,{name:catalog.find(x=>x.id===id).title+' — งานตัวอย่าง',data:{}});if(!cleared){document.querySelector('#save-status').textContent='เริ่มตัวอย่างใหม่แล้ว · ล้างสำรองเก่าไม่ได้';notify('ล้างสำรองชั่วคราวของเครื่องมือนี้ไม่ได้ กรุณาส่งออก JSON หากต้องการเก็บงานใหม่');}}
+ if(action==='command')openCommandPalette();else if(action==='save')saveProject();else if(action==='view-results'){mounted?.showResults?.();}else if(action==='duplicate')duplicateProject();else if(action==='clear-project-search'){projectFilters.search='';const search=document.querySelector('#project-search');if(search){search.value='';search.focus();}renderProjectCards();}else if(action==='export')exportProject();else if(action==='import')importProject();else if(action==='print')printProject();else if(action==='report-html')downloadReportHTML(button);else if(action==='print-confirm')window.print();else if(action==='projects')location.hash='projects';else if(action==='favorites'){filters.favorites=!filters.favorites;renderHome();}else if(action==='clear-filter'){filters={search:'',category:'all',favorites:false};renderHome();}else if(action==='about')about();else if(action==='close-modal')closeModal();else if(action==='reset')reset();else if(action==='confirm-reset'){const id=current.tool.id;const projectId=current.id;closeModal();cleanup({save:false});current=null;const cleared=clearDraft(id,projectId);renderTool(id,{name:catalog.find(x=>x.id===id).title+' — งานตัวอย่าง',data:{}});if(!cleared){document.querySelector('#save-status').textContent='เริ่มตัวอย่างใหม่แล้ว · ล้างสำรองเก่าไม่ได้';notify('ล้างสำรองชั่วคราวของเครื่องมือนี้ไม่ได้ กรุณาส่งออก JSON หากต้องการเก็บงานใหม่');}}
 });
 document.addEventListener('keydown',event=>{
  const modal=document.querySelector('.modal');
@@ -328,10 +354,14 @@ document.addEventListener('keydown',event=>{
   const search=document.querySelector('#tool-search,#project-search');event.preventDefault();if(search)search.focus();else openCommandPalette();
  }
  if(event.key==='Tab'&&modal){
-  const elements=[...modal.querySelectorAll('a[href],button,input,select,textarea')].filter(el=>!el.disabled&&el.getClientRects().length);
+  const elements=[...modal.querySelectorAll('a[href],button,input,select,textarea,summary,[tabindex]:not([tabindex="-1"])')].filter(el=>!el.disabled&&el.getClientRects().length);
   const first=elements[0],last=elements.at(-1);
-  if(event.shiftKey&&document.activeElement===first){event.preventDefault();last?.focus();}
-  else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first?.focus();}
+  const active=document.activeElement;
+  if(!elements.includes(active)){
+   const candidates=modal.contains(active)?elements.filter(el=>active.compareDocumentPosition(el)&(event.shiftKey?Node.DOCUMENT_POSITION_PRECEDING:Node.DOCUMENT_POSITION_FOLLOWING)):[];
+   event.preventDefault();(event.shiftKey?candidates.at(-1)||last:candidates[0]||first)?.focus();
+  }else if(event.shiftKey&&active===first){event.preventDefault();last?.focus();}
+  else if(!event.shiftKey&&active===last){event.preventDefault();first?.focus();}
  }
 });
 window.addEventListener('beforeprint',preparePrint);

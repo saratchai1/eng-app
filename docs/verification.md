@@ -1,4 +1,4 @@
-Latest release: Engineering Studio 0.3 — 113/113 tests and focused browser checks; see [studio-0.3.md](studio-0.3.md). Earlier evidence below is retained as version history.
+Latest release: Engineering Studio 0.4 — 143/143 tests and focused browser checks; see [studio-0.4.md](studio-0.4.md). Previous Studio evidence is in [studio-0.3.md](studio-0.3.md). Earlier evidence below is retained as version history.
 
 # Verification record
 

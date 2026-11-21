@@ -135,3 +135,17 @@ body.modal-open { overflow: hidden; }
   #print-root .live-diagram, #print-root .calculation-figure > .sketch { max-height: 65mm; }
   #print-root .table-scroll { overflow: visible; }
 }
+
+/* Optional baseline remains available beside the named design alternatives. */
+.baseline-details { margin-top: 24px; border-top: 1px solid var(--line); }
+.baseline-details>summary { padding: 17px 3px; color: var(--navy); font-size: 13px; font-weight: 600; cursor: pointer; }
+.baseline-details .comparison-panel { margin-top: 0; }
+
+.comparison-view-tools { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 2px 0 14px; }
+.comparison-view-tools>span { color: #7a8e81; font: 9px/1.5 'Courier New',monospace; letter-spacing: .1em; }
+.comparison-view-tools .button { padding: 8px 10px; font-size: 11px; }
+.comparison-view-tools .icon { width: 14px; height: 14px; }
+.studio-main .calc-grid.comparison-expanded { grid-template-columns: minmax(0,1fr); }
+.comparison-expanded>.input-panel { display: none; }
+.comparison-expanded .options-matrix,.comparison-expanded .options-input-matrix,.comparison-expanded .options-check-matrix { min-width: calc(140px + var(--option-columns,2)*150px); }
+@media(max-width:600px) { .comparison-view-tools>span { display: none; } .comparison-view-tools { justify-content: flex-end; } }
