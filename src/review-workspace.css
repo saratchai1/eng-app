@@ -1,0 +1,64 @@
+/* Generated using AppDeploy UI skill */
+.studio-main .calc-grid.review-focused { grid-template-columns: minmax(0, 1fr); }
+.review-focused > .input-panel { display: none; }
+.review-focused .result-panel { min-width: 0; }
+.workspace-subnav .review-tab-count { display: inline-flex; justify-content: center; align-items: center; min-width: 20px; min-height: 20px; padding: 0 5px; background: #f1e7d9; color: #8a5b32; border-radius: 4px; font: 600 10px/1.5 ui-monospace, monospace; }
+.workspace-subnav .review-tab-count[hidden] { display: none; }
+.review-desk { min-width: 0; }
+.review-desk-heading { display: flex; justify-content: space-between; align-items: center; gap: 25px; padding: 28px 30px; background: #173f41; color: #f4f6f0; border-radius: 10px 10px 0 0; }
+.review-desk-kicker { display: block; font: 600 10px/1.6 ui-monospace, monospace; letter-spacing: .14em; color: #c4a67f; }
+.review-desk-heading h2 { font-size: 26px; line-height: 1.6; font-weight: 600; letter-spacing: -.4px; color: #f4f6f0; margin: 7px 0 4px; }
+.review-desk-heading p { color: #b7cdca; font-size: 12px; line-height: 1.8; margin: 0; }
+.review-desk-heading .button { flex: 0 0 auto; background: #ffffff0a; border-color: #557976; color: #e5efea; }
+.review-desk-heading .button:hover { background: #ffffff14; }
+.review-desk-counts { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 0; padding: 0; margin: 0 0 24px; border: 1px solid #d7e3df; border-top: 0; border-radius: 0 0 9px 9px; background: #fff; }
+.review-desk-counts > div { display: grid; grid-template-columns: 1fr auto; align-items: center; column-gap: 12px; padding: 22px 28px; border-right: 1px solid #dfe8e3; }
+.review-desk-counts > div:last-child { border: 0; }
+.review-desk-counts dt { color: #54726b; font-size: 12px; font-weight: 600; }
+.review-desk-counts dd { font: 32px/1.3 ui-monospace, monospace; letter-spacing: -.07em; color: #1e514c; margin: 0; grid-column: 2; grid-row: 1 / 3; }
+.review-desk-counts small { display: block; font-size: 10px; line-height: 1.8; color: #7b8e86; margin-top: 4px; }
+.review-desk-navigation { display: flex; align-items: stretch; gap: 5px; padding: 5px; width: fit-content; max-width: 100%; border: 1px solid #d8e4df; background: #eff4f0; border-radius: 8px; margin: 0 0 20px; }
+.review-desk-navigation button { border: 1px solid transparent; border-radius: 5px; background: transparent; color: #607e71; font: inherit; font-size: 13px; padding: 11px 19px; min-height: 43px; cursor: pointer; }
+.review-desk-navigation button > span { font: 10px ui-monospace, monospace; color: #849b8d; margin-right: 9px; }
+.review-desk-navigation [aria-selected="true"] { background: #fff; color: #1f5c4f; border-color: #d5e2d9; font-weight: 650; box-shadow: 0 2px 5px #1d4a3510; }
+.review-desk-navigation button:focus-visible { outline: 2px solid #338876; outline-offset: 2px; }
+.review-desk-panel { min-width: 0; }
+.review-desk-panel[hidden] { display: none; }
+.review-desk .review-register-metrics { display: none; }
+.review-desk-boundary { font-size: 11px; color: #7a8b7d; line-height: 1.9; margin: 14px 0 3px; padding: 15px 2px 0; border-top: 1px solid #dee6db; }
+.review-handover { margin: 0 0 30px; padding: 21px 24px; border: 1px solid #cfdfd6; background: #f7faf6; border-left: 3px solid #688e7b; break-inside: avoid; }
+.review-handover.has-outstanding { border-left-color: #b17c44; }
+.review-handover h2 { font-size: 17px; margin: 7px 0; color: #234e42; }
+.review-handover p { font-size: 12px; color: #647d6d; line-height: 1.9; margin: 0; }
+.review-handover dl { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); margin: 17px 0; gap: 10px; }
+.review-handover dl > div { display: flex; align-items: baseline; justify-content: space-between; padding-right: 20px; gap: 10px; }
+.review-handover dt { font-size: 10px; color: #6c8472; }
+.review-handover dd { font: 22px ui-monospace, monospace; color: #2f5b43; margin: 0; }
+.review-handover .review-handover-note { border-top: 1px solid #dce7dd; padding-top: 12px; font-size: 10px; overflow-wrap: anywhere; }
+@media (max-width: 900px) {
+  .review-desk-heading { padding: 24px; }
+  .review-desk-heading h2 { font-size: 23px; }
+  .review-desk-counts > div { padding: 18px; }
+}
+@media (max-width: 600px) {
+  .review-desk-heading { display: block; padding: 23px 18px; }
+  .review-desk-heading h2 { font-size: 22px; }
+  .review-desk-heading .button { margin-top: 18px; min-height: 42px; }
+  .review-desk-kicker { font-size: 9px; letter-spacing: .08em; }
+  .review-desk-counts { margin-bottom: 20px; }
+  .review-desk-counts > div { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; padding: 15px 12px; }
+  .review-desk-counts dt { font-size: 11px; }
+  .review-desk-counts dd { font-size: 29px; order: 1; }
+  .review-desk-counts small { display: none; }
+  .review-desk-navigation { width: 100%; gap: 3px; }
+  .review-desk-navigation button { flex: 1; padding: 9px 7px; font-size: 12px; line-height: 1.7; }
+  .review-desk-navigation button > span { display: block; margin: 0 0 2px; }
+  .review-handover { padding: 17px; }
+  .review-handover dl > div { flex-direction: column; gap: 6px; padding-right: 0; }
+}
+@media print {
+  .review-desk { display: none !important; }
+  .review-handover { margin-bottom: 20px; background: #fff; padding: 16px; }
+  .review-handover h2 { font-size: 13px; }
+  .review-handover p { font-size: 10px; }
+}

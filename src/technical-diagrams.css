@@ -1,0 +1,76 @@
+/* Generated using AppDeploy UI skill */
+.technical-sheet { --drawing-ink: #234d4a; --drawing-muted: #62796f; --drawing-teal: #277a6c; --drawing-accent: #bd823c; text-align: left; margin: 16px -4px 14px; color: var(--drawing-ink); }
+.technical-sheet-head { display: flex; gap: 11px; align-items: center; padding: 0 0 13px; border-bottom: 1px solid #dce6df; }
+.technical-sheet-head > span:first-child { font: 600 10px/1.4 'IBM Plex Mono', Consolas, monospace; letter-spacing: .08em; color: var(--drawing-muted); }
+.technical-sheet-head strong { font-size: 13px; font-weight: 600; }
+.technical-live { margin-left: auto; font: 500 8px/1.4 'IBM Plex Mono', Consolas, monospace; color: #527d6f; letter-spacing: .07em; white-space: nowrap; }
+.technical-grid { container-type: inline-size; display: grid; grid-template-columns: repeat(auto-fit,minmax(min(100%,230px),1fr)); gap: 18px; padding-top: 18px; }
+.technical-panel { min-width: 0; }
+.technical-panel + .technical-panel { border-left: 1px solid #e2e8e1; padding-left: 18px; }
+.technical-panel h4 { display: flex; gap: 9px; align-items: baseline; font: 500 10px/1.5 'IBM Plex Mono', Consolas, monospace; color: #739080; margin: 0; }
+.technical-panel h4 span { font: 500 13px/1.6 'Sarabun', 'Noto Sans Thai', sans-serif; color: #345c50; }
+.technical-section { width: 100%; display: block; height: auto; max-height: 310px; }
+.technical-panel > p { color: #657c70; font-size: 11px; line-height: 1.8; padding: 8px 4px 0; margin: 0; }
+.technical-sheet .technical-label { fill: var(--drawing-ink); font: 500 12px 'IBM Plex Sans', 'Sarabun', sans-serif; }
+.technical-sheet .technical-note { fill: var(--drawing-muted); font: 12px 'Sarabun', 'Noto Sans Thai', sans-serif; }
+.technical-sheet .technical-line, .technical-concrete-edge { stroke: var(--drawing-ink); stroke-width: 1.6; fill: none; }
+.technical-concrete-fill { fill: #e5eeea; }
+.technical-concrete-solid { stroke: var(--drawing-ink); stroke-width: 1.7; fill: #e5eeea; }
+.technical-dimension { stroke: #78938a; stroke-width: 1; fill: none; }
+.technical-extension { stroke: #a9bab1; stroke-width: .8; fill: none; }
+.technical-break { stroke: #78938a; stroke-width: 1.1; fill: none; }
+.technical-centroid { stroke: #78918b; stroke-width: .9; stroke-dasharray: 5 4; fill: none; }
+.technical-steel { fill: #236f62; stroke: #fff; stroke-width: .5; }
+.technical-compression { fill: #e8d4af; stroke: #b58443; stroke-width: 1.4; }
+.technical-neutral-axis { stroke: #bb823e; stroke-width: 1; stroke-dasharray: 4 4; fill: none; }
+.technical-axis { stroke: #91a79d; stroke-width: 1.1; fill: none; }
+.technical-pressure { fill: #ecdbbd; fill-opacity: .65; stroke: #bb823e; stroke-width: 1.6; }
+.technical-sheet .technical-pressure-label { fill: #926426; font: 500 12px 'IBM Plex Sans', 'Sarabun', sans-serif; }
+.technical-force { stroke: #277a6c; stroke-width: 1.7; fill: none; }
+.technical-water-fill { fill: #a9d9df; opacity: .55; }
+.technical-waterline { stroke: #3e8f9d; stroke-width: 1.6; stroke-dasharray: 5 4; fill: none; }
+.technical-sheet .technical-water-label { fill: #347a87; font: 500 12px 'IBM Plex Sans', sans-serif; }
+.technical-sheet .technical-wide { width: 100%; height: auto; max-height: 330px; margin: 12px auto 0; }
+.technical-data { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 0; background: #f2f5ef; border-block: 1px solid #dde6db; margin: 18px 0 0; }
+.technical-data > div { min-width: 0; padding: 11px 10px; }
+.technical-data > div + div { border-left: 1px solid #dde6db; }
+.technical-data dt { font-size: 10px; color: #62776a; line-height: 1.7; }
+.technical-data dd { font: 500 15px/1.7 'IBM Plex Sans', 'Sarabun', sans-serif; color: #244e40; margin: 3px 0 0; overflow-wrap: anywhere; }
+.technical-data dd small { font-size: 10px; color: #60756b; white-space: nowrap; }
+.technical-legend { display: flex; gap: 9px 16px; align-items: center; flex-wrap: wrap; padding-top: 12px; color: #62766b; font-size: 10px; line-height: 1.8; }
+.technical-legend > span { display: inline-flex; gap: 6px; align-items: center; }
+.technical-legend > span:last-child { margin-left: auto; }
+.technical-key { display: inline-block; width: 9px; height: 9px; border: 1px solid #99b3a6; }
+.technical-key.concrete { background: #e5eeea; }
+.technical-key.steel { background: #236f62; border-color: #236f62; border-radius: 50%; }
+.technical-key.compression { background: #e8d4af; border-color: #b58443; }
+.technical-key.water { background: #a9d9df; border-color: #3e8f9d; }
+.technical-outside { display: flex; flex-direction: column; justify-content: center; min-height: 245px; gap: 10px; padding: 24px 14px; color: #85612f; }
+.technical-outside > span { font: 500 9px 'IBM Plex Mono', Consolas, monospace; letter-spacing: .12em; }
+.technical-outside strong { font-size: 20px; font-weight: 500; }
+.technical-outside p { font-size: 12px; line-height: 1.9; margin: 0; }
+.technical-outside small { font-size: 12px; }
+.technical-sheet .technical-outside-label { fill: #aa563e; font: 16px 'Sarabun', 'Noto Sans Thai', sans-serif; }
+@container (max-width: 477px) {
+ .technical-panel + .technical-panel { border-left: 0; border-top: 1px solid #e2e8e1; padding: 15px 0 0; }
+}
+@media (max-width: 620px) {
+ .technical-live { display: none; }
+ .technical-sheet-head { flex-wrap: wrap; gap: 5px 10px; }
+ .technical-data { grid-template-columns: repeat(2,minmax(0,1fr)); }
+ .technical-data > div:nth-child(3) { border-left: 0; }
+ .technical-data > div:nth-child(n+3) { border-top: 1px solid #dde6db; }
+ .technical-legend > span:last-child { margin-left: 0; }
+ .technical-panel + .technical-panel { border-left: 0; border-top: 1px solid #e2e8e1; padding: 15px 0 0; }
+ .technical-sheet .technical-wide { min-width: 0; }
+}
+@media print {
+ .technical-sheet { break-inside: avoid; margin: 9px 0; }
+ .technical-grid { grid-template-columns: 1fr 1fr; gap: 15px; }
+ .technical-section { max-height: 65mm; }
+ #print-root .technical-sheet .technical-wide { max-height: 75mm; }
+ .technical-data { grid-template-columns: repeat(4,minmax(0,1fr)); }
+ .technical-data dt, .technical-legend, .technical-panel > p { font-size: 9pt; }
+ .technical-data dd { font-size: 11pt; }
+ .technical-live { display: none; }
+}
