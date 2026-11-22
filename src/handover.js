@@ -82,7 +82,7 @@ function buildEntry(record,id,definitions) {
   const document=normalizeDocument(record.data?._document);
   const documentNotices=metadataWarnings(record.data?._document,document);
   const displayedDocument=documentNotices.length?invalidateDocumentReview(document):document;
-  const entry={id,name:cleanText(record.name,180)||'งานไม่มีชื่อ',toolId:record.toolId,toolTitle:tool?.title||'เครื่องมือไม่รู้จัก',category:tool?.category||'',categoryLabel:categories.find(category=>category.id===tool?.category)?.label||'',sourceState:record.fromDraft?'draft':'saved',document:displayedDocument,review:documentReviewState(displayedDocument),kind:tool?.kind||'special',model:emptyModel(),register:emptyRegister(),warnings:documentNotices,missing:false};
+  const entry={id,name:cleanText(record.name,180)||'งานไม่มีชื่อ',toolId:record.toolId,toolTitle:tool?.title||'เครื่องมือไม่รู้จัก',category:tool?.category||'',categoryLabel:categories.find(category=>category.id===tool?.category)?.label||'',sourceState:record.fromDraft?'draft':'saved',document:displayedDocument,review:documentReviewState(displayedDocument),kind:tool?.kind||'special',model:emptyModel(),register:emptyRegister(),warnings:documentNotices,metadataAdjusted:documentNotices.length>0,missing:false};
   if(entry.sourceState==='draft')entry.warnings.push('ใช้ร่างแก้ไขล่าสุดของงานนี้ ซึ่งยังไม่ได้กดบันทึกงาน');
   if(!tool || !isObject(record.data)) {
     entry.model=emptyModel('invalid','รูปแบบงานไม่ถูกต้อง');entry.warnings.push('เปิดเครื่องมือต้นทางเพื่อตรวจข้อมูลก่อนใช้ผล');return entry;
@@ -109,7 +109,7 @@ function buildEntry(record,id,definitions) {
       const checks=Array.isArray(result.checks)?result.checks:[];
       const assessment={pass:checks.filter(item=>item.pass===true).length,fail:checks.filter(item=>item.pass===false).length,unassessed:checks.filter(item=>item.pass!==true&&item.pass!==false).length,total:checks.length};
       const label=assessment.fail?`แบบจำลองไม่ผ่าน ${assessment.fail} รายการ`:assessment.unassessed?`แบบจำลองไม่ประเมิน ${assessment.unassessed} รายการ`:checks.length?'ผลคำนวณพร้อมตรวจทาน':'ปริมาณพร้อมตรวจเทียบข้อมูล';
-      entry.model={status:'calculated',label,metrics:result.summary.slice(0,3).map(item=>({...item})),assessment};
+      entry.model={status:'calculated',label,metrics:result.summary.slice(0,3).map(item=>({...item})),assessment,checks:checks.map((item,index)=>({index,label:item.label||'รายการตรวจในแบบจำลอง',detail:item.detail||'',pass:item.pass===true?true:item.pass===false?false:null}))};
     }catch(error){entry.model=emptyModel('invalid','ข้อมูลคำนวณต้องตรวจแก้');entry.warnings.push(error.message);}
   }else {
     try{entry.model=workflowModel(record.toolId,record.data);}
@@ -200,7 +200,7 @@ export function parseProjectBundle(raw) {
   return {format:FORMAT,schemaVersion:1,metadata,exportedAt:value.exportedAt,...(value.appVersion!==undefined?{appVersion:value.appVersion}:{}),records};
 }
 
-export function createProjectBundle(records,state,{now=new Date().toISOString(),appVersion='0.7'}={}) {
+export function createProjectBundle(records,state,{now=new Date().toISOString(),appVersion='0.8'}={}) {
   if(!validTimestamp(now))throw new Error('วันที่ส่งออกชุดเอกสารไม่ถูกต้อง');
   if(!Array.isArray(state?.selectedIds) || !state.selectedIds.length || state.selectedIds.length>MAX_HANDOVER_RECORDS || new Set(state.selectedIds).size!==state.selectedIds.length || !state.selectedIds.every(validId))throw new Error('เลือกงานที่ไม่ซ้ำกัน 1–30 งานก่อนส่งออก');
   const normalized=normalizeHandoverState(state),source=Array.isArray(records)?records:[];

@@ -22,13 +22,17 @@ import {createHandoverExample} from './handover-example.js';
 import {restoreHandoverHistory,appendHandoverReference,compareHandoverReference,handoverReferenceModel,MAX_HANDOVER_REFERENCES} from './handover-history.js';
 import {mountHandoverHistory,handoverHistoryComparisonReportMarkup,handoverHistorySnapshotReportMarkup} from './handover-history-view.js';
 import {HANDOVER_HISTORY_KEY,readHandoverHistory,updateHandoverHistory} from './handover-history-storage.js';
+import {buildReviewRoom,normalizeReviewRoomFilters} from './review-room.js';
+import {mountReviewRoom} from './review-room-view.js';
+import {reviewRoomReportMarkup,reviewRoomCSV} from './review-room-report.js';
+import {reviewSourceHash,parseReviewSourceHash,resolveReviewSource,preserveReviewSourceDraft} from './review-source.js';
 
-const APP_VERSION='0.7';
+const APP_VERSION='0.8';
 const SESSION_WRITER_ID=uniqueId();
 
 const app=document.querySelector('#app');
 const tools={...engineeringTools,...quantityTools};
-const KEYS={projects:'engapp.projects.v1',favorites:'engapp.favorites.v1',recent:'engapp.recent.v1',handover:'engapp.handover.v1',handoverPrevious:'engapp.handover.previous.v1',handoverHistoryPreferences:'engapp.handover.history-preferences.v1'};
+const KEYS={projects:'engapp.projects.v1',favorites:'engapp.favorites.v1',recent:'engapp.recent.v1',handover:'engapp.handover.v1',handoverPrevious:'engapp.handover.previous.v1',handoverHistoryPreferences:'engapp.handover.history-preferences.v1',reviewRoomPreferences:'engapp.review-room.preferences.v1'};
 const read=(key,fallback)=>{try{return JSON.parse(localStorage.getItem(key))??fallback;}catch{return fallback;}};
 function readSavedProjects(){const records=read(KEYS.projects,[]);return Array.isArray(records)?records.filter(p=>p&&p.schemaVersion===1&&typeof p.id==='string'&&p.id.length>0&&p.id.length<=200&&typeof p.name==='string'&&catalog.some(t=>t.id===p.toolId)&&p.data&&typeof p.data==='object'&&!Array.isArray(p.data)):[];}
 let saved=readSavedProjects();
@@ -48,6 +52,7 @@ let handoverUnsaved=false,handoverHistoryView=null,historyBusy=false,historyUndo
 const historyPreferences=read(KEYS.handoverHistoryPreferences,null);
 let historySelectedId=typeof historyPreferences?.selectedId==='string'?historyPreferences.selectedId:null;
 let historyDraft={code:typeof historyPreferences?.draft?.code==='string'?historyPreferences.draft.code.slice(0,40):'',note:typeof historyPreferences?.draft?.note==='string'?historyPreferences.draft.note.slice(0,1200):''};
+let reviewRoom=null,reviewRoomState=read(KEYS.reviewRoomPreferences,null),reviewSourceContext=null;
 
 function showModal(markup){
  modalCleanup?.();modalCleanup=null;
@@ -70,7 +75,7 @@ function write(key,value){let ok=false;try{ok=persistJSON(localStorage,key,value
 function writeDraft(record){let ok=false;try{ok=persistToolDraft(localStorage,record);}catch{}return storageResult(ok);}
 function readDraft(toolId,projectId=undefined){try{return readToolDraft(localStorage,toolId,projectId,saved);}catch{return null;}}
 function clearDraft(toolId,projectId=undefined){try{return removeToolDraft(localStorage,toolId,projectId);}catch{return false;}}
-function cleanup({save=true}={}){clearTimeout(draftTimer);if(save&&current&&mounted)saveDraft({showStatus:false});mounted?.destroy?.();mounted=null;handoverDesk?.destroy?.();handoverDesk=null;handoverHistoryView?.destroy?.();handoverHistoryView=null;}
+function cleanup({save=true}={}){clearTimeout(draftTimer);if(save&&current&&mounted)saveDraft({showStatus:false});mounted?.destroy?.();mounted=null;handoverDesk?.destroy?.();handoverDesk=null;handoverHistoryView?.destroy?.();handoverHistoryView=null;if(reviewRoom){reviewRoomState=reviewRoom.getState();reviewRoom.destroy();reviewRoom=null;}reviewSourceContext=null;}
 function saveDraft({showStatus=true}={}){if(!current||!mounted)return false;if(current.id&&!current.dirty){try{return storageResult(persistToolPointer(localStorage,current.tool.id,current.id));}catch{return storageResult(false);}}const record=makeDraftRecord({id:current.id,toolId:current.tool.id,name:document.querySelector('#project-name')?.value ?? current.name,createdAt:current.createdAt,writerId:SESSION_WRITER_ID,baseSavedAt:current.baseSavedAt,data:mounted.getState()},current.dirty?new Date().toISOString():current.updatedAt);const ok=writeDraft(record);if(showStatus&&current.dirty){const badge=document.querySelector('#save-status');if(badge)badge.textContent=ok?'สำรองชั่วคราวแล้ว · กดบันทึกงานเพื่อเก็บในงานของฉัน':'ยังสำรองไม่ได้ · กรุณาส่งออก JSON เก็บข้อมูล';}return ok;}
 function onChange({documentOnly=false}={}){if(!documentOnly)mounted?.invalidateReview?.();mounted?.refreshContext?.();if(current)current.dirty=true;clearTimeout(draftTimer);draftTimer=setTimeout(()=>saveDraft(),500);const badge=document.querySelector('#save-status');if(badge)badge.textContent='มีการแก้ไข · กำลังสำรองชั่วคราว…';}
 function logo(){return `<span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 40 44" fill="none"><path d="m20 2 17 10v20L20 42 3 32V12z" stroke="currentColor" stroke-width="2"/><path d="M12 12h16v5H17v4h9v4h-9v5h11v5H12z" fill="currentColor"/><path d="M29 6v8m-4-4h8" stroke="#f58335" stroke-width="2"/></svg></span><span><strong>ENG<span>APP</span></strong><small>ENGINEERING STUDIO</small></span>`;}
@@ -80,9 +85,10 @@ function footer(){return studioFooter(APP_VERSION);}
 function recentMarkup(){return recentTools.length?`<section class="recent-tools" aria-label="เครื่องมือที่ใช้ล่าสุด"><div class="recent-heading"><span class="eyebrow">PICK UP WHERE YOU LEFT OFF</span><h2>กลับไปทำต่อ</h2></div><div class="recent-links">${recentTools.map(id=>{const tool=catalog.find(t=>t.id===id);return `<a href="#tool/${id}"><span class="recent-icon">${icon(tool.kind==='calculator'?'calculator':'folder')}</span><span><small>${e(categories.find(c=>c.id===tool.category).label)}</small><strong>${e(tool.title)}</strong></span><span class="recent-arrow" aria-hidden="true">↗</span></a>`;}).join('')}</div></section>`:'';}
 
 function renderHome(){
+ if(!guardReviewSourceTransition())return;
  cleanup();current=null;saved=readSavedProjects();document.title='ENG APP — Engineering Studio';
  const records=saved.map(record=>{const resolved=effectiveProject(record);return {...resolved.project,fromDraft:resolved.fromDraft};});
- app.innerHTML=header()+`<main id="main" class="page-shell studio-main studio-home">${studioHomeLead(records,tools)}<section class="handover-home-entry" aria-labelledby="home-handover-title"><div class="handover-home-mark" aria-hidden="true">${icon('layers')}</div><div><span class="eyebrow">NEW / PROJECT HANDOVER</span><h2 id="home-handover-title">เตรียมเอกสารทั้งโครงการให้ตรวจต่อได้</h2><p>เลือกงาน · ทบทวนประเด็นค้าง · ส่งต่อทั้งชุด</p></div><div class="handover-home-actions"><a class="button primary" href="#handover">จัดชุดส่งตรวจ ${icon('external')}</a><button class="button light" data-action="handover-example">ลองชุดตัวอย่าง 6 เอกสาร</button></div></section>${recentMarkup()}<section id="tools" class="catalog-section" aria-label="ค้นหาเครื่องมือ"><div class="catalog-heading"><div><span class="eyebrow">ENGINEERING TOOLKIT</span><h2>เครื่องมือสำหรับทุกขั้นของงาน</h2></div><button class="button light compact ${filters.favorites?'selected':''}" data-action="favorites">${icon('star')} รายการโปรด <span>${favorites.length}</span></button></div><div class="search-bar"><label class="search-input">${icon('search')}<input id="tool-search" type="search" value="${e(filters.search)}" placeholder="ค้นหาเครื่องมือ เช่น BOQ กำแพงกันดิน แผนงาน..." aria-label="ค้นหาเครื่องมือ"><kbd>/</kbd></label><span class="search-hint">เลือกโจทย์ · ปรับข้อมูล · ตรวจผล</span></div><div class="category-list" role="group" aria-label="หมวดเครื่องมือ">${categories.map(c=>`<button class="category ${filters.category===c.id?'selected':''}" data-category="${c.id}" aria-pressed="${filters.category===c.id}">${icon(c.icon)}${c.label}${c.id==='all'?` <span>${catalog.length}</span>`:''}</button>`).join('')}</div><div id="catalog-results" aria-live="polite"></div></section><aside class="storage-note">${icon('folder')}<div><strong>พร้อมส่งต่องาน พร้อมกลับมาคิดใหม่</strong><span>บันทึกงานพร้อมข้อมูลเอกสาร ส่งออก JSON เพื่อย้ายเครื่อง และสร้างรายงานสำหรับตรวจทาน</span></div><button class="button light compact" data-action="projects">เปิดงานของฉัน</button></aside></main>`+footer();
+ app.innerHTML=header()+`<main id="main" class="page-shell studio-main studio-home">${studioHomeLead(records,tools)}<section class="handover-home-entry" aria-labelledby="home-handover-title"><div class="handover-home-mark" aria-hidden="true">${icon('layers')}</div><div><span class="eyebrow">NEW / PROJECT REVIEW ROOM</span><h2 id="home-handover-title">เห็นประเด็นทั้งชุด แล้วเปิดแก้ได้ตรงงาน</h2><p>เลือกเอกสาร · ดูสิ่งที่ต้องทำต่อ · ทบทวนกับข้อมูลต้นทาง</p></div><div class="handover-home-actions"><a class="button primary" href="#review-room">เข้าห้องทบทวน ${icon('external')}</a><a class="button light" href="#handover">จัดชุดเอกสาร</a><button class="button light" data-action="handover-example">ลองชุดตัวอย่าง 6 เอกสาร</button></div></section>${recentMarkup()}<section id="tools" class="catalog-section" aria-label="ค้นหาเครื่องมือ"><div class="catalog-heading"><div><span class="eyebrow">ENGINEERING TOOLKIT</span><h2>เครื่องมือสำหรับทุกขั้นของงาน</h2></div><button class="button light compact ${filters.favorites?'selected':''}" data-action="favorites">${icon('star')} รายการโปรด <span>${favorites.length}</span></button></div><div class="search-bar"><label class="search-input">${icon('search')}<input id="tool-search" type="search" value="${e(filters.search)}" placeholder="ค้นหาเครื่องมือ เช่น BOQ กำแพงกันดิน แผนงาน..." aria-label="ค้นหาเครื่องมือ"><kbd>/</kbd></label><span class="search-hint">เลือกโจทย์ · ปรับข้อมูล · ตรวจผล</span></div><div class="category-list" role="group" aria-label="หมวดเครื่องมือ">${categories.map(c=>`<button class="category ${filters.category===c.id?'selected':''}" data-category="${c.id}" aria-pressed="${filters.category===c.id}">${icon(c.icon)}${c.label}${c.id==='all'?` <span>${catalog.length}</span>`:''}</button>`).join('')}</div><div id="catalog-results" aria-live="polite"></div></section><aside class="storage-note">${icon('folder')}<div><strong>พร้อมส่งต่องาน พร้อมกลับมาคิดใหม่</strong><span>บันทึกงานพร้อมข้อมูลเอกสาร ส่งออก JSON เพื่อย้ายเครื่อง และสร้างรายงานสำหรับตรวจทาน</span></div><button class="button light compact" data-action="projects">เปิดงานของฉัน</button></aside></main>`+footer();
  document.querySelector('#tool-search').addEventListener('input',event=>{filters.search=event.target.value;renderCatalog();});
  renderCatalog();
 }
@@ -97,8 +103,9 @@ function card(t){return `<article class="tool-card color-${t.color}"><a class="c
 function defaults(def){return Object.fromEntries(def.inputGroups.flatMap(g=>g.fields).map(x=>[x.key,x.default]));}
 function normalizeInputs(def,source){const result=defaults(def);if(!source||typeof source!=='object'||Array.isArray(source))return result;for(const field of def.inputGroups.flatMap(g=>g.fields)){if(Object.hasOwn(source,field.key))result[field.key]=source[field.key];}return result;}
 
-function renderTool(toolId,project=null){
- cleanup();const tool=catalog.find(t=>t.id===toolId);if(!tool){location.hash='';return;}
+function renderTool(toolId,project=null,{reviewContext=null}={}){
+ if(!guardReviewSourceTransition())return;
+ cleanup();reviewSourceContext=reviewContext;const tool=catalog.find(t=>t.id===toolId);if(!tool){location.hash='';return;}
  const restored=resolveProjectForTool(toolId,{project,draft:readDraft(toolId,project?.id),saved});project=restored.project;
  const initial=project?.data || null;document.title=tool.title+' | ENG APP';recentTools=[toolId,...recentTools.filter(id=>id!==toolId)].slice(0,4);try{persistJSON(localStorage,KEYS.recent,recentTools);}catch{}
  current={tool,id:project?.id||null,name:project?.name||`${tool.title} — งานตัวอย่าง`,createdAt:project?.createdAt||new Date().toISOString(),updatedAt:project?.updatedAt||new Date().toISOString(),dirty:restored.fromDraft,baseSavedAt:project?.baseSavedAt||saved.find(p=>p.id===project?.id)?.updatedAt||null,resumedWriterId:restored.fromDraft?project?.writerId:null,resumedUpdatedAt:restored.fromDraft?project?.updatedAt:null};
@@ -140,6 +147,7 @@ function renderTool(toolId,project=null){
  document.querySelector('#project-name').addEventListener('input',onChange);
  if(restored.fromDraft)document.querySelector('#save-status').textContent='กู้คืนสำรองชั่วคราวแล้ว · กดบันทึกงานเมื่อพร้อม';
  window.scrollTo(0,0);
+ if(reviewContext){mountReviewSourceContext(reviewContext);focusReviewSourceTarget(reviewContext.target);}
 }
 function assumptionsMarkup(def){
  return `<section class="assumptions studio-model-basis"><div class="studio-basis-heading"><span class="eyebrow">MODEL BASIS</span><h3>สมมติฐานและขอบเขตการใช้</h3></div><ul>${def.assumptions.map(x=>`<li>${e(x)}</li>`).join('')}</ul>${def.references?.length?`<div class="references"><strong>เอกสารประกอบวิธีคำนวณ</strong>${def.references.map(ref=>`<a href="${e(ref.url)}" target="_blank" rel="noopener">${e(ref.label)} ${icon('external')}</a>`).join('')}</div>`:''}</section>`;
@@ -232,6 +240,19 @@ function mountCalculator(host,def,initial,{getDocument=()=>normalizeDocument()}=
   getRevisionSummary:()=>revisions.getSummary(),
   getAssessment:()=>result?{pass:(result.checks||[]).filter(c=>c.pass===true).length,fail:(result.checks||[]).filter(c=>c.pass===false).length,unassessed:(result.checks||[]).filter(c=>c.pass!==true&&c.pass!==false).length}:null,
   showResults:()=>{showView('overview');host.querySelector('.workspace-subnav').scrollIntoView({behavior:'smooth',block:'start'});},
+  showReviewTarget:target=>{
+   if(target.section==='review'){
+    showView('review');reviewDesk.show('register');
+    if(target.pending)return reviewRegister.revealPending();
+    if(target.itemId)return reviewRegister.revealItem(target.itemId);
+    const heading=host.querySelector('#calc-review-register h2');if(heading){heading.tabIndex=-1;heading.focus();heading.scrollIntoView({block:'center'});}return true;
+   }
+   if(target.section==='revisions'){
+    showView('review');reviewDesk.show('revisions');
+    const field=host.querySelector('#calc-revisions textarea')||host.querySelector('#calc-revisions h2');if(field){field.tabIndex=field.tabIndex<0?-1:field.tabIndex;field.focus();field.scrollIntoView({block:'center'});}return true;
+   }
+   showView('overview');const region=host.querySelector('#calc-result');if(region){region.tabIndex=-1;region.focus();region.scrollIntoView({block:'start'});}return true;
+  },
   getReport:()=>{
    if(error)throw new Error(error);
    return `<h2>${e(def.title)}</h2><table><thead><tr><th>ข้อมูลเข้า</th><th>ค่า</th><th>หน่วย</th></tr></thead><tbody>${fields.map(field=>`<tr><td>${e(field.label)}</td><td>${e(field.type==='select'?(field.options.find(option=>option.value===input[field.key])?.label||String(input[field.key])):f(input[field.key],5))}</td><td>${e(field.unit||'')}</td></tr>`).join('')}</tbody></table>${resultMarkup(result,def,input,true)}${comparisonMarkup(def,baseline,input,{report:true})}${optionsDesk.getReport()}${sensitivity.getReport()}${reviewRegister.getReport()}${revisions.getReport()}<h3>สมมติฐาน</h3><ul>${def.assumptions.map(x=>`<li>${e(x)}</li>`).join('')}</ul><h3>เอกสารอ้างอิง</h3>${(def.references||[]).map(ref=>`<p>${e(ref.label)}<br>${e(ref.url)}</p>`).join('')}`;
@@ -258,6 +279,11 @@ function saveProject(){
  saved=next;
  let cleared=false;try{const ownedCleared=!conflict||removeOwnedDraft(localStorage,current.tool.id,current.id,{writerId:SESSION_WRITER_ID,resumedWriterId:current.resumedWriterId,resumedUpdatedAt:current.resumedUpdatedAt});cleared=finalizeSavedDraft(localStorage,record,conflict?record.id:current.id)&&ownedCleared;}catch{}
  current.id=record.id;current.name=record.name;current.createdAt=record.createdAt;current.updatedAt=record.updatedAt;current.baseSavedAt=record.updatedAt;current.resumedWriterId=null;current.resumedUpdatedAt=null;current.dirty=false;
+ if(reviewSourceContext&&record.id!==reviewSourceContext.sourceId){
+  reviewSourceContext={...reviewSourceContext,originalSourceId:reviewSourceContext.originalSourceId||reviewSourceContext.sourceId,sourceId:record.id,findingId:'',target:{section:'source'}};
+  history.replaceState(null,'',reviewSourceHash(record.id,{section:'source'}));
+  const feedback=document.querySelector('[data-review-return-feedback]');if(feedback){feedback.hidden=false;feedback.textContent='บันทึกเป็นสำเนางานใหม่แล้ว ชุดส่งตรวจยังอ้างอิงงานเดิม กรุณาตรวจการเลือกเอกสารก่อนส่งต่อ';}
+ }
  document.querySelector('#project-name').value=record.name;
  document.querySelector('#save-status').textContent='บันทึกงานแล้ว · '+new Date().toLocaleTimeString('th-TH',{hour:'2-digit',minute:'2-digit'})+(cleared?'':' · ล้างร่างเก่าไม่ได้');
  notify(conflict?'งานเดิมถูกแก้ไขจากอีกแท็บ จึงเก็บการแก้ไขนี้เป็นสำเนาใหม่':cleared?'บันทึกงานแล้ว เปิดต่อได้จาก “งานของฉัน”':'บันทึกงานแล้ว แต่ล้างร่างเก่าไม่ได้ กรุณาสำรอง JSON');
@@ -295,6 +321,7 @@ function openHandoverRecord(id){
  history.replaceState(null,'',`#tool/${record.toolId}`);renderTool(record.toolId,record);
 }
 function renderHandover(){
+ if(!guardReviewSourceTransition())return;
  cleanup();current=null;document.title='ชุดส่งตรวจโครงการ | ENG APP';
  const records=handoverRecords();
  app.innerHTML=header('handover')+`<main id="main" class="page-shell studio-main handover-page">${previousHandoverState?'<aside class="storage-note handover-restore-note">'+icon('folder')+'<div><strong>กลับไปจัดชุดก่อนหน้าได้</strong><span>คืนชื่อชุด ข้อความ และลำดับที่เลือก โดยงานที่นำเข้ายังคงอยู่</span></div><button type="button" class="button light compact" data-action="restore-handover">คืนชุดที่สำรองไว้</button></aside>':''}<div id="handover-workspace"></div></main>`+footer();
@@ -344,6 +371,108 @@ function currentHistorySource(){
  if(!handoverUnsaved&&!handoverDesk)handoverState=normalizeHandoverState(read(KEYS.handover,handoverState));
  return currentHandover();
 }
+function saveReviewRoomPreferences(value){
+ reviewRoomState=value;
+ return write(KEYS.reviewRoomPreferences,value);
+}
+function currentReviewRoomModel(){
+ const source=currentHistorySource();
+ return buildReviewRoom(source.records,tools,source.state,{appVersion:APP_VERSION});
+}
+function reviewRoomExportFilters(value=reviewRoom?.getState()||reviewRoomState){
+ return normalizeReviewRoomFilters({...value?.filters,groupBy:value?.groupBy||value?.filters?.groupBy});
+}
+function preserveReviewSource(){
+ clearTimeout(draftTimer);
+ const ok=preserveReviewSourceDraft(Boolean(current&&mounted&&current.dirty),()=>saveDraft({showStatus:false}));
+ if(!ok){
+  const message='ยังเก็บร่างล่าสุดไม่ได้ จึงคงหน้านี้ไว้ กรุณาดาวน์โหลด JSON สำรอง แล้วลองกลับห้องทบทวนอีกครั้ง';
+  const feedback=document.querySelector('[data-review-return-feedback]');if(feedback){feedback.hidden=false;feedback.textContent=message;}
+  const badge=document.querySelector('#save-status');if(badge)badge.textContent='ยังเก็บร่างไม่ได้ · ส่งออก JSON ก่อนออกจากงาน';
+  notify(message);
+ }
+ return ok;
+}
+function guardReviewSourceTransition(){
+ if(!reviewSourceContext||!current?.dirty)return true;
+ if(preserveReviewSource())return true;
+ history.replaceState(null,'',reviewSourceHash(reviewSourceContext.sourceId,reviewSourceContext.target,reviewSourceContext.findingId));
+ return false;
+}
+function renderReviewRoom({notice='',sourcePreserved=false}={}){
+ if(current&&mounted&&current.dirty&&!sourcePreserved&&!preserveReviewSource()){
+  history.replaceState(null,'',reviewSourceContext?reviewSourceHash(reviewSourceContext.sourceId,reviewSourceContext.target,reviewSourceContext.findingId):'#tool/'+current.tool.id);return;
+ }
+ cleanup({save:false});current=null;document.title='ห้องทบทวนโครงการ | ENG APP';
+ app.innerHTML=header('review-room')+'<main id="main" class="page-shell studio-main review-room-page"><div id="review-room-workspace"></div></main>'+footer();
+ try{
+  reviewRoom=mountReviewRoom(document.querySelector('#review-room-workspace'),{
+   model:currentReviewRoomModel(),initialState:reviewRoomState,notice,onStateChange:saveReviewRoomPreferences,
+   onOpen:openReviewFinding,onReport:printReviewRoom,onExportCSV:exportReviewRoomCSV,
+   onRefresh:()=>refreshReviewRoom('อ่านข้อมูลต้นทางล่าสุดแล้ว'),notify
+  });
+  reviewRoomState=reviewRoom.getState();
+ }catch(error){document.querySelector('#review-room-workspace').innerHTML=`<div class="error-banner" role="alert"><div><h1>ยังเปิดห้องทบทวนไม่ได้</h1><p>${e(error.message)}</p><a class="button light" href="#handover">ตรวจชุดเอกสารที่เลือก</a></div></div>`;}
+ window.scrollTo(0,0);
+}
+function refreshReviewRoom(notice=''){
+ if(!reviewRoom)return;
+ try{reviewRoom.refresh({model:currentReviewRoomModel(),notice});}
+ catch(error){reviewRoom.refresh({notice:'อ่านข้อมูลปัจจุบันไม่ได้: '+error.message});notify('อ่านข้อมูลห้องทบทวนไม่ได้ กรุณาตรวจชุดเอกสารต้นทาง');}
+}
+function openReviewFinding(finding){
+ try{
+  const model=currentReviewRoomModel(),latest=model.findings.find(item=>item.id===finding?.id);
+  if(!latest){refreshReviewRoom('รายการนี้เปลี่ยนไปแล้ว กรุณาเลือกจากข้อมูลล่าสุด');return;}
+  if(latest.target.section==='source'&&model.documents.find(item=>item.id===latest.documentId)?.missing){location.hash='handover';return;}
+  saved=readSavedProjects();resolveReviewSource(saved,latest.documentId);
+  reviewRoomState=reviewRoom?.getState()||reviewRoomState;saveReviewRoomPreferences(reviewRoomState);
+  const hash=reviewSourceHash(latest.documentId,latest.target,latest.id);
+  history.replaceState(null,'',hash);renderReviewSource(parseReviewSourceHash(hash));
+ }catch(error){refreshReviewRoom(error.message);notify(error.message);}
+}
+function renderReviewSource(context){
+ try{
+  saved=readSavedProjects();const record=resolveReviewSource(saved,context.sourceId);
+  const model=currentReviewRoomModel(),finding=model.findings.find(item=>item.id===context.findingId&&item.documentId===context.sourceId);
+  const currentContext={...context,packageTitle:model.metadata.title,findingTitle:finding?.title||'ตรวจข้อมูลต้นทางของเอกสาร',currentFinding:Boolean(finding)};
+  renderTool(record.toolId,record,{reviewContext:currentContext});
+ }catch(error){history.replaceState(null,'','#review-room');renderReviewRoom({notice:error.message});}
+}
+function mountReviewSourceContext(context){
+ const main=document.querySelector('#main');if(!main)return;
+ const aside=document.createElement('aside');aside.className='review-source-context';aside.setAttribute('aria-label','งานต้นทางจากห้องทบทวน');
+ aside.innerHTML=`<div><span class="eyebrow">PROJECT REVIEW / SOURCE DOCUMENT</span><strong>${e(context.findingTitle)}</strong><p>${e(context.packageTitle)} · กลับเพื่ออ่านผลล่าสุดหลังแก้ข้อมูล</p></div><button type="button" class="button primary compact" data-action="return-review-room">${icon('back')} กลับห้องทบทวน</button><p data-review-return-feedback role="status" ${context.currentFinding?'hidden':''}>${context.currentFinding?'':'รายการเดิมไม่อยู่ในคิวปัจจุบันแล้ว งานต้นทางยังเปิดตรวจได้'}</p>`;
+ main.prepend(aside);
+}
+function focusReviewSourceTarget(target){
+ if(target.section==='document'){
+  const editor=document.querySelector('.document-editor');if(editor)editor.open=true;
+  const field=editor?.querySelector('[data-document-field]');if(field){field.focus();field.scrollIntoView({block:'center'});}return;
+ }
+ if(mounted?.showReviewTarget){const found=mounted.showReviewTarget(target);if(found===false)notify('รายการที่ขอเปิดเปลี่ยนไปแล้ว กรุณาตรวจรายการในงานนี้');return;}
+ const host=document.querySelector('#tool-workspace');if(host){host.tabIndex=-1;host.focus();host.scrollIntoView({block:'start'});}
+}
+function returnReviewRoom(){
+ if(!preserveReviewSource())return;
+ const notice=reviewSourceContext?.originalSourceId||reviewSourceContext&&current?.id!==reviewSourceContext.sourceId?'บันทึกเป็นงานอีกฉบับแล้ว ชุดยังอ้างอิงต้นทางเดิม กรุณาตรวจสมาชิกชุดก่อนส่งต่อ':'อ่านข้อมูลต้นทางหลังกลับจากงานแล้ว';
+ history.replaceState(null,'','#review-room');renderReviewRoom({notice,sourcePreserved:true});
+}
+function exportReviewRoomCSV(value){
+ try{
+  const model=currentReviewRoomModel();if(!model.documents.length)throw new Error('เลือกเอกสารในชุดก่อนส่งออกรายการ');
+  download(`engapp-review-agenda-${new Date().toISOString().slice(0,10)}.csv`,reviewRoomCSV(model,reviewRoomExportFilters(value)),'text/csv;charset=utf-8');
+  notify('ส่งออกวาระตรวจทานตามตัวกรองครบทุกหน้าแล้ว');
+ }catch(error){notify('ส่งออกรายการทบทวนไม่ได้: '+error.message);}
+}
+function reviewRoomReport(value){
+ const model=currentReviewRoomModel();if(!model.documents.length)throw new Error('เลือกเอกสารในชุดก่อนสร้างวาระตรวจทาน');
+ return {markup:reviewRoomReportMarkup(model,reviewRoomExportFilters(value)),title:'วาระทบทวน · '+model.metadata.title};
+}
+function printReviewRoom(value){
+ try{const report=reviewRoomReport(value);openReport(report.markup,report.title,'review-agenda');}
+ catch(error){notify('สร้างวาระตรวจทานไม่ได้: '+error.message);}
+}
 function historyViewData(){
  let restored,readOnly=false;
  try{restored=readHandoverHistory(localStorage);}catch(error){restored=restoreHandoverHistory(null);restored.notice=error.message;readOnly=true;}
@@ -362,6 +491,7 @@ function selectHandoverReference(id){
  historySelectedId=id;historyNotice='';saveHistoryPreferences();refreshHandoverHistory();
 }
 function renderHandoverHistory(){
+ if(!guardReviewSourceTransition())return;
  cleanup();current=null;document.title='ฉบับอ้างอิงและรายการเปลี่ยนแปลง | ENG APP';
  const data=historyViewData();
  app.innerHTML=header('handover-history')+'<main id="main" class="page-shell studio-main"><div id="handover-history-workspace"></div></main>'+footer();
@@ -515,7 +645,7 @@ function printProject(){
 }
 function openReport(markup,title,fileTag){
  const report=indexReportContent(markup);
- showModal(`<div class="modal-backdrop"><section class="modal report-modal report-reader" role="dialog" aria-modal="true" aria-label="ตัวอย่างรายงาน"><div class="report-toolbar"><div><strong>${fileTag==='handover-change'?'รายการเปลี่ยนแปลงชุดส่งตรวจ':fileTag==='handover-reference'?'รายงานฉบับอ้างอิง':fileTag==='handover'?'สรุปชุดส่งตรวจโครงการ':'รายงานสำหรับตรวจทาน'}</strong><p>อ่านตามสารบัญ · ข้อมูล ณ เวลาที่เปิดรายงาน</p></div><button class="button light compact" data-action="report-html">${icon('download')} ดาวน์โหลด HTML</button><button class="button primary compact" data-action="print-confirm">${icon('print')} พิมพ์ / บันทึก PDF</button><button class="icon-button" data-action="close-modal" aria-label="ปิดตัวอย่างรายงาน">${icon('close')}</button></div><div class="report-reader-layout">${reportNavigationMarkup(report.sections)}<div class="report-preview" tabindex="0" aria-label="เนื้อหารายงาน">${report.content}</div></div></section></div>`);
+ showModal(`<div class="modal-backdrop"><section class="modal report-modal report-reader" role="dialog" aria-modal="true" aria-label="ตัวอย่างรายงาน"><div class="report-toolbar"><div><strong>${fileTag==='review-agenda'?'วาระทบทวนโครงการ':fileTag==='handover-change'?'รายการเปลี่ยนแปลงชุดส่งตรวจ':fileTag==='handover-reference'?'รายงานฉบับอ้างอิง':fileTag==='handover'?'สรุปชุดส่งตรวจโครงการ':'รายงานสำหรับตรวจทาน'}</strong><p>อ่านตามสารบัญ · ข้อมูล ณ เวลาที่เปิดรายงาน</p></div><button class="button light compact" data-action="report-html">${icon('download')} ดาวน์โหลด HTML</button><button class="button primary compact" data-action="print-confirm">${icon('print')} พิมพ์ / บันทึก PDF</button><button class="icon-button" data-action="close-modal" aria-label="ปิดตัวอย่างรายงาน">${icon('close')}</button></div><div class="report-reader-layout">${reportNavigationMarkup(report.sections)}<div class="report-preview" tabindex="0" aria-label="เนื้อหารายงาน">${report.content}</div></div></section></div>`);
  activeReport={...report,title,fileTag};
  modalCleanup=mountReportReader(document.querySelector('.report-reader'));
  document.querySelector('[data-action="print-confirm"]').focus();
@@ -534,9 +664,9 @@ async function downloadReportHTML(button){
 }
 function preparePrint(){
  document.body.classList.remove('printing-report');document.querySelector('#print-root').innerHTML='';
- if(!activeReport&&(!current||!mounted)&&!handoverDesk&&!handoverHistoryView)return;
+ if(!activeReport&&(!current||!mounted)&&!handoverDesk&&!handoverHistoryView&&!reviewRoom)return;
  try{
-  const content=activeReport?.content||(handoverHistoryView?handoverChangesReport().markup:handoverDesk?handoverReportMarkup(currentHandover().model):projectReport());
+  const content=activeReport?.content||(reviewRoom?reviewRoomReport().markup:handoverHistoryView?handoverChangesReport().markup:handoverDesk?handoverReportMarkup(currentHandover().model):projectReport());
   document.querySelector('#print-root').innerHTML=content;document.body.classList.add('printing-report');
  }
  catch(error){notify('ยังพิมพ์ผลไม่ได้: '+error.message);}
@@ -544,6 +674,7 @@ function preparePrint(){
 
 function projectDate(value){const date=new Date(value);return Number.isFinite(date.getTime())?date.toLocaleString('th-TH',{dateStyle:'medium',timeStyle:'short'}):'ยังไม่มีวันที่บันทึก';}
 function renderProjects(){
+ if(!guardReviewSourceTransition())return;
  cleanup();current=null;saved=readSavedProjects();document.title='งานของฉัน | ENG APP';
  app.innerHTML=header('projects')+`<main id="main" class="page-shell projects-page studio-main"><div class="workspace-title"><div><span class="eyebrow">MY WORKSPACE</span><h1>ทะเบียนงานของฉัน</h1><p>ภาพรวมผลคำนวณ เอกสาร และรายการตรวจทานของแต่ละงาน</p></div><div class="handover-project-actions"><a class="button light" href="#handover">${icon('layers')} เตรียมชุดส่งตรวจ</a><button class="button primary" data-action="import">${icon('upload')} เปิดไฟล์ JSON</button></div></div>${saved.length?`<div class="project-toolbar"><label class="search-input">${icon('search')}<input id="project-search" type="search" value="${e(projectFilters.search)}" placeholder="ค้นหาชื่องาน รหัสโครงการ ลูกค้า หรือเครื่องมือ..." aria-label="ค้นหางานที่บันทึก"></label><label class="project-sort">เรียงตาม<select id="project-sort"><option value="updated" ${projectFilters.sort==='updated'?'selected':''}>แก้ไขล่าสุด</option><option value="name" ${projectFilters.sort==='name'?'selected':''}>ชื่อโครงการ</option><option value="tool" ${projectFilters.sort==='tool'?'selected':''}>ชนิดเครื่องมือ</option></select></label></div><div id="project-results" aria-live="polite"></div>`:`<div class="empty-state large">${icon('folder')}<h2>เริ่มต้นงานแรกของคุณ</h2><p>เลือกเครื่องมือ ปรับข้อมูล แล้วกด “บันทึกงาน”</p><a class="button primary" href="#">เลือกเครื่องมือ</a></div>`}<aside class="storage-note">${icon('info')}<div><strong>ไฟล์ JSON คือสำเนางานที่ย้ายเครื่องได้</strong><span>ป้าย “มีร่างแก้ไข” หมายถึงมีข้อมูลใหม่กว่าที่บันทึกไว้ เปิดงานหรือส่งออกเพื่อใช้ร่างล่าสุดได้</span></div></aside></main>`+footer();
  document.querySelector('#project-search')?.addEventListener('input',event=>{projectFilters.search=event.target.value;renderProjectCards();});
@@ -559,7 +690,7 @@ function renderProjectCards(){
 }
 function openCommandPalette(){
  const projects=readSavedProjects();
- const actions=[{type:'action',id:'handover',label:'เตรียมชุดส่งตรวจโครงการ',detail:'PROJECT HANDOVER / BUNDLE',icon:'layers'},{type:'action',id:'handover-history',label:'ฉบับอ้างอิงและรายการเปลี่ยนแปลง',detail:'PACKAGE REFERENCES / CHANGE REVIEW',icon:'file'},{type:'action',id:'projects',label:'เปิดทะเบียนงานของฉัน',detail:'PROJECT REGISTER',icon:'folder'},{type:'action',id:'import',label:'เปิดไฟล์งาน JSON',detail:'IMPORT PROJECT',icon:'upload'},...(current&&mounted?[{type:'action',id:'save',label:'บันทึกงานปัจจุบัน',detail:'SAVE / CTRL S',icon:'save'},{type:'action',id:'print',label:'สร้างรายงานพร้อมข้อมูลเอกสาร',detail:'REPORT / CTRL P',icon:'print'}]:[])];
+ const actions=[{type:'action',id:'review-room',label:'เปิดห้องทบทวนโครงการ',detail:'PROJECT REVIEW ROOM / ACTION AGENDA',icon:'check'},{type:'action',id:'handover',label:'เตรียมชุดส่งตรวจโครงการ',detail:'PROJECT HANDOVER / BUNDLE',icon:'layers'},{type:'action',id:'handover-history',label:'ฉบับอ้างอิงและรายการเปลี่ยนแปลง',detail:'PACKAGE REFERENCES / CHANGE REVIEW',icon:'file'},{type:'action',id:'projects',label:'เปิดทะเบียนงานของฉัน',detail:'PROJECT REGISTER',icon:'folder'},{type:'action',id:'import',label:'เปิดไฟล์งาน JSON',detail:'IMPORT PROJECT',icon:'upload'},...(current&&mounted?[{type:'action',id:'save',label:'บันทึกงานปัจจุบัน',detail:'SAVE / CTRL S',icon:'save'},{type:'action',id:'print',label:'สร้างรายงานพร้อมข้อมูลเอกสาร',detail:'REPORT / CTRL P',icon:'print'}]:[])];
  const entries=[...actions,...projects.map(p=>({type:'project',id:p.id,label:p.name,detail:(p.data?._document?.projectCode||'งานที่บันทึก')+' · '+(catalog.find(t=>t.id===p.toolId)?.title||''),icon:'folder'})),...catalog.map(t=>({type:'tool',id:t.id,label:t.title,detail:t.en+' · '+t.tags.join(' '),icon:t.kind==='calculator'?'ruler':t.kind==='workflow'?'chart':'book'}))];
  const root=showModal(`<div class="command-overlay"><section class="command-dialog modal" role="dialog" aria-modal="true" aria-label="ค้นหาและเปิดงาน"><div class="command-search">${icon('search')}<input id="command-input" type="search" placeholder="ค้นหาเครื่องมือ ชื่องาน หรือรหัสโครงการ..." aria-label="ค้นหาเครื่องมือหรืองาน" role="combobox" aria-expanded="true" aria-autocomplete="list" aria-controls="command-results" autocomplete="off"><button class="icon-button" data-action="close-modal" aria-label="ปิดการค้นหา">${icon('close')}</button></div><div id="command-results" class="command-results" role="listbox" aria-label="ผลค้นหา"></div><p class="command-footer">↑ ↓ เลือก · Enter เปิด · Esc ปิด</p></section></div>`);
  const input=root.querySelector('#command-input'),list=root.querySelector('#command-results');
@@ -581,6 +712,7 @@ function openCommandPalette(){
   else if(entry.id==='projects'){history.replaceState(null,'','#projects');renderProjects();}
   else if(entry.id==='handover'){history.replaceState(null,'','#handover');renderHandover();}
   else if(entry.id==='handover-history'){history.replaceState(null,'','#handover-history');renderHandoverHistory();}
+  else if(entry.id==='review-room'){history.replaceState(null,'','#review-room');renderReviewRoom();}
   else if(entry.id==='import')importProject();else if(entry.id==='save')saveProject();else if(entry.id==='print')printProject();
  }
  input.addEventListener('input',draw);
@@ -592,6 +724,7 @@ function openCommandPalette(){
  draw();input.focus();
 }
 function showDiscipline(id){
+ if(!guardReviewSourceTransition())return;
  if(!categories.some(category=>category.id===id))return;
  filters={search:'',category:id,favorites:false};history.replaceState(null,'','#tools');renderHome();
  document.querySelectorAll('[data-nav-category]').forEach(button=>button.classList.toggle('active',button.dataset.navCategory===id));
@@ -599,7 +732,24 @@ function showDiscipline(id){
 }
 function about(){const root=document.querySelector('#modal-root');showModal(`<div class="modal-backdrop"><section class="modal" role="dialog" aria-modal="true" aria-labelledby="about-title"><button class="icon-button modal-close" data-action="close-modal" aria-label="ปิดหน้าต่าง">${icon('close')}</button><span class="eyebrow">ABOUT ENGINEERING STUDIO</span><h2 id="about-title">คิดอย่างเป็นระบบ ส่งต่องานอย่างมีที่มา</h2><p>ENG APP Engineering Studio รวม 20 เครื่องมือสำหรับงานคำนวณ ปริมาณ ต้นทุน และบริหารโครงการ พร้อมการเทียบทางเลือก ศึกษาความไว และข้อมูลเอกสารสำหรับส่งตรวจทาน</p><p>เครื่องมือโครงสร้างเป็นการตรวจเบื้องต้นตามสมมติฐานที่แสดง พร้อมสูตรและแหล่งอ้างอิง ราคาและโครงการตั้งต้นเป็นข้อมูลตัวอย่างที่แก้ไขได้</p><p>ข้อมูลเก็บในเบราว์เซอร์นี้ ส่งออก JSON เพื่อสำรองงาน และพิมพ์รายงานเป็น PDF จากเมนูพิมพ์ของเบราว์เซอร์ได้</p><a class="button primary" href="https://github.com/saratchai1/eng-app" target="_blank" rel="noopener">ดูซอร์สโค้ดและขอบเขต</a></section></div>`);root.querySelector('button').focus();}
 function reset(){if(!current)return;const toolId=current.tool.id;const root=document.querySelector('#modal-root');showModal(`<div class="modal-backdrop"><section class="modal small" role="dialog" aria-modal="true" aria-labelledby="reset-title"><h2 id="reset-title">เริ่มจากตัวอย่างใหม่?</h2><p>ข้อมูลที่แก้ไขในหน้าปัจจุบันจะถูกแทนด้วยค่าตัวอย่าง งานที่กดบันทึกไว้ยังเปิดได้จาก “งานของฉัน”</p><div class="modal-actions"><button class="button light" data-action="close-modal">กลับไปแก้ไข</button><button class="button primary" data-action="confirm-reset">เริ่มตัวอย่างใหม่</button></div></section></div>`);root.querySelector('button').focus();}
-function route(){if(document.querySelector('#modal-root').firstElementChild)closeModal();const hash=location.hash.slice(1);if(hash==='projects')renderProjects();else if(hash==='handover')renderHandover();else if(hash==='handover-history')renderHandoverHistory();else if(hash.startsWith('tool/'))renderTool(hash.slice(5));else if(hash==='tools'){if(current||!document.querySelector('#tools'))renderHome();document.querySelector('#tools').scrollIntoView({behavior:'smooth'});}else renderHome();}
+function route(){
+ if(document.querySelector('#modal-root').firstElementChild)closeModal();
+ const hash=location.hash.slice(1);
+ if(reviewSourceContext&&current?.dirty&&!preserveReviewSource()){
+  history.replaceState(null,'',reviewSourceHash(reviewSourceContext.sourceId,reviewSourceContext.target,reviewSourceContext.findingId));return;
+ }
+ if(hash==='projects')renderProjects();
+ else if(hash==='handover')renderHandover();
+ else if(hash==='handover-history')renderHandoverHistory();
+ else if(hash==='review-room')renderReviewRoom();
+ else if(hash.startsWith('review-source/')){
+  try{renderReviewSource(parseReviewSourceHash(hash));}
+  catch(error){history.replaceState(null,'','#review-room');renderReviewRoom({notice:error.message});}
+ }
+ else if(hash.startsWith('tool/'))renderTool(hash.slice(5));
+ else if(hash==='tools'){if(current||!document.querySelector('#tools'))renderHome();document.querySelector('#tools').scrollIntoView({behavior:'smooth'});}
+ else renderHome();
+}
 
 document.addEventListener('click',event=>{
  const skip=event.target.closest('a.skip-link');if(skip){event.preventDefault();const main=document.querySelector('#main');if(main){main.tabIndex=-1;main.focus();main.scrollIntoView({block:'start'});}return;}
@@ -614,7 +764,8 @@ document.addEventListener('click',event=>{
  const confirmDelete=event.target.closest('[data-confirm-delete]');if(confirmDelete){const id=confirmDelete.dataset.confirmDelete;saved=readSavedProjects();const removed=saved.find(x=>x.id===id);const next=saved.filter(x=>x.id!==id);if(write(KEYS.projects,next)){saved=next;const draftCleared=!removed||clearDraft(removed.toolId,id);closeModal();renderProjects();notify(draftCleared?'ลบงานแล้ว':'ลบงานที่บันทึกแล้ว แต่ล้างสำรองชั่วคราวไม่ได้');}return;}
  const button=event.target.closest('[data-action]');if(!button)return;
  const action=button.dataset.action;
- if(action==='command')openCommandPalette();else if(action==='save')saveProject();else if(action==='view-results'){mounted?.showResults?.();}else if(action==='duplicate')duplicateProject();else if(action==='clear-project-search'){projectFilters.search='';const search=document.querySelector('#project-search');if(search){search.value='';search.focus();}renderProjectCards();}else if(action==='export')exportProject();else if(action==='import')importProject();else if(action==='confirm-bundle-import')confirmBundleImport();else if(action==='handover')location.hash='handover';else if(action==='handover-example')previewHandoverExample();else if(action==='restore-handover')restoreHandoverDraft();else if(action==='print')printProject();else if(action==='report-html')downloadReportHTML(button);else if(action==='print-confirm')window.print();else if(action==='projects')location.hash='projects';else if(action==='favorites'){filters.favorites=!filters.favorites;renderHome();}else if(action==='clear-filter'){filters={search:'',category:'all',favorites:false};renderHome();}else if(action==='about')about();else if(action==='close-modal')closeModal();else if(action==='reset')reset();else if(action==='confirm-reset'){const id=current.tool.id;const projectId=current.id;closeModal();cleanup({save:false});current=null;const cleared=clearDraft(id,projectId);renderTool(id,{name:catalog.find(x=>x.id===id).title+' — งานตัวอย่าง',data:{}});if(!cleared){document.querySelector('#save-status').textContent='เริ่มตัวอย่างใหม่แล้ว · ล้างสำรองเก่าไม่ได้';notify('ล้างสำรองชั่วคราวของเครื่องมือนี้ไม่ได้ กรุณาส่งออก JSON หากต้องการเก็บงานใหม่');}}
+ if(action==='return-review-room'){returnReviewRoom();return;}
+ if(action==='command')openCommandPalette();else if(action==='save')saveProject();else if(action==='view-results'){mounted?.showResults?.();}else if(action==='duplicate')duplicateProject();else if(action==='clear-project-search'){projectFilters.search='';const search=document.querySelector('#project-search');if(search){search.value='';search.focus();}renderProjectCards();}else if(action==='export')exportProject();else if(action==='import')importProject();else if(action==='confirm-bundle-import')confirmBundleImport();else if(action==='handover')location.hash='handover';else if(action==='handover-example')previewHandoverExample();else if(action==='restore-handover')restoreHandoverDraft();else if(action==='print')printProject();else if(action==='report-html')downloadReportHTML(button);else if(action==='print-confirm')window.print();else if(action==='projects')location.hash='projects';else if(action==='favorites'){filters.favorites=!filters.favorites;renderHome();}else if(action==='clear-filter'){filters={search:'',category:'all',favorites:false};renderHome();}else if(action==='about')about();else if(action==='close-modal')closeModal();else if(action==='reset')reset();else if(action==='confirm-reset'){const id=current.tool.id;const projectId=current.id;closeModal();cleanup({save:false});current=null;history.replaceState(null,'','#tool/'+id);const cleared=clearDraft(id,projectId);renderTool(id,{name:catalog.find(x=>x.id===id).title+' — งานตัวอย่าง',data:{}});if(!cleared){document.querySelector('#save-status').textContent='เริ่มตัวอย่างใหม่แล้ว · ล้างสำรองเก่าไม่ได้';notify('ล้างสำรองชั่วคราวของเครื่องมือนี้ไม่ได้ กรุณาส่งออก JSON หากต้องการเก็บงานใหม่');}}
 });
 document.addEventListener('keydown',event=>{
  const modal=document.querySelector('.modal');
@@ -633,8 +784,12 @@ document.addEventListener('keydown',event=>{
   if(event.key.toLowerCase()==='s'){event.preventDefault();historyDraft=handoverHistoryView.getDraft();if(saveHistoryPreferences())notify('เก็บข้อความร่างแล้ว ยังไม่ได้สร้างฉบับอ้างอิง');return;}
   if(event.key.toLowerCase()==='p'){event.preventDefault();printHandoverChanges();return;}
  }
+ if((event.ctrlKey||event.metaKey)&&!event.altKey&&reviewRoom&&!modal){
+  if(event.key.toLowerCase()==='s'){event.preventDefault();if(saveReviewRoomPreferences(reviewRoom.getState()))notify('เก็บตัวกรองและตำแหน่งทบทวนแล้ว');return;}
+  if(event.key.toLowerCase()==='p'){event.preventDefault();printReviewRoom();return;}
+ }
  if(event.key==='/'&&!modal&&!['INPUT','TEXTAREA','SELECT'].includes(document.activeElement.tagName)){
-  const search=document.querySelector('#tool-search,#project-search,[data-ho-search],[data-hh-search]');event.preventDefault();if(search){const picker=search.closest('details');if(picker)picker.open=true;search.focus();}else openCommandPalette();
+  const search=document.querySelector('#tool-search,#project-search,[data-ho-search],[data-hh-search],[data-rr-search]');event.preventDefault();if(search){const picker=search.closest('details');if(picker)picker.open=true;search.focus();}else openCommandPalette();
  }
  if(event.key==='Tab'&&modal){
   const elements=[...modal.querySelectorAll('a[href],button,input,select,textarea,summary,[tabindex]:not([tabindex="-1"])')].filter(el=>!el.disabled&&el.getClientRects().length);
@@ -652,6 +807,7 @@ window.addEventListener('afterprint',()=>document.body.classList.remove('printin
 window.addEventListener('storage',event=>{
  if(handoverDesk&&(event.key===null||event.key===KEYS.projects||event.key?.startsWith('engapp.draft.'))){handoverDesk.refresh(handoverRecords());}
  if(handoverHistoryView&&(event.key===null||event.key===HANDOVER_HISTORY_KEY||event.key===KEYS.handover||event.key===KEYS.projects||event.key?.startsWith('engapp.draft.'))){refreshHandoverHistory();}
+ if(reviewRoom&&(event.key===null||event.key===KEYS.handover||event.key===KEYS.projects||event.key?.startsWith('engapp.draft.'))){refreshReviewRoom();}
 });
 window.addEventListener('hashchange',route);
 window.addEventListener('pagehide',saveDraft);

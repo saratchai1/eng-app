@@ -151,6 +151,12 @@ export function reviewRegisterSummary(definition,rawState,currentInputs,currentD
   return {...evaluateRegister(definition,restored.state,currentInputs,currentDocument).summary,rejected:restored.rejected,adjusted:restored.adjusted};
 }
 
+/** A read-only view for package review; never promotes pending editor text to evidence. */
+export function evaluateReviewRegister(definition,rawState,currentInputs,currentDocument) {
+  const restored=restoreReviewRegister(definition,rawState);
+  return {...evaluateRegister(definition,restored.state,currentInputs,currentDocument),pending:copyPending(restored.state.pending),rejected:restored.rejected,adjusted:restored.adjusted,pendingRejected:restored.pendingRejected,notice:restored.notice};
+}
+
 /** A copied project keeps the reasoning, but starts a new human review cycle. */
 export function reopenReviewRegister(definition,rawState,{now=new Date().toISOString()}={}) {
   const {state}=restoreReviewRegister(definition,rawState);
@@ -275,5 +281,19 @@ export function mountReviewRegister(host,definition,{getInputs,getDocument=()=>(
   host.addEventListener('click',click);host.addEventListener('submit',submit);host.addEventListener('input',input);host.addEventListener('change',change);host.addEventListener('keydown',keydown);
   if(state.pending){const pending=copyPending(state.pending);openEditor(pending.itemId?state.items.find(item=>item.id===pending.itemId):null,{draftValues:pending.values,focus:false});}
   render();
-  return {importAdjusted:restored.adjusted,getState,refresh:render,getSummary:()=>({...getEvaluation().summary,rejected:restored.rejected,adjusted:restored.adjusted}),getReport:()=>reviewRegisterReport(definition,getInputs(),getState(),getDocument()),destroy:()=>{disposed=true;host.removeEventListener('click',click);host.removeEventListener('submit',submit);host.removeEventListener('input',input);host.removeEventListener('change',change);host.removeEventListener('keydown',keydown);}};
+  const revealItem=id=>{
+    if(disposed)return false;
+    if(!validId(id) || !state.items.some(item=>item.id===id)){announce('ไม่พบประเด็นนี้ในงานปัจจุบัน กรุณาตรวจรายการล่าสุด');return false;}
+    host.querySelector('[data-review-search]').value='';host.querySelector('[data-review-filter]').value='all';render();
+    const row=host.querySelector('#'+prefix+'-item-'+id)?.closest('.review-item');
+    if(!row){announce('ไม่พบประเด็นนี้ในหน้ารายการ กรุณาตรวจรายการล่าสุด');return false;}
+    row.tabIndex=-1;row.focus({preventScroll:true});row.scrollIntoView({block:'center',behavior:'auto'});
+    announce('เปิดตำแหน่ง '+code(state.items.find(item=>item.id===id))+' แล้ว'+(readPending()?' ข้อความร่างที่กำลังแก้ยังคงอยู่':''));return true;
+  };
+  const revealPending=()=>{
+    if(disposed)return false;
+    if(!readPending() || editor.hidden){announce('ไม่มีข้อความประเด็นที่รอยืนยันในงานปัจจุบัน');return false;}
+    editor.querySelector('[data-review-field="title"]')?.focus({preventScroll:true});editor.scrollIntoView({block:'center',behavior:'auto'});return true;
+  };
+  return {importAdjusted:restored.adjusted,getState,refresh:render,revealItem,revealPending,getSummary:()=>({...getEvaluation().summary,rejected:restored.rejected,adjusted:restored.adjusted}),getReport:()=>reviewRegisterReport(definition,getInputs(),getState(),getDocument()),destroy:()=>{disposed=true;host.removeEventListener('click',click);host.removeEventListener('submit',submit);host.removeEventListener('input',input);host.removeEventListener('change',change);host.removeEventListener('keydown',keydown);}};
 }

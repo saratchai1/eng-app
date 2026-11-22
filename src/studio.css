@@ -547,6 +547,15 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,te
 }
 /* Studio integration: document signals, reading order and the real command-dialog markup. */
 .studio-sidebar { overflow-y: auto; }
+
+/* Exact-source review context remains separate from editable project data. */
+.review-source-context { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 16px; margin: 0 0 26px; padding: 20px 24px; background: #e9f0e9; border: 1px solid #c4d4c7; border-left: 4px solid #44796e; border-radius: 6px; }
+.review-source-context > div { flex: 1 1 340px; min-width: 0; }
+.review-source-context strong { display: block; margin-top: 6px; font-size: 16px; color: #173f3e; overflow-wrap: anywhere; }
+.review-source-context p { margin: 6px 0 0; font-size: 12px; line-height: 1.8; color: #53695e; }
+.review-source-context > [data-review-return-feedback] { flex-basis: 100%; padding-top: 10px; border-top: 1px solid #c4d4c7; color: #80532c; }
+@media (max-width: 600px) { .review-source-context { padding: 16px; } .review-source-context .button { width: 100%; } }
+@media print { .review-source-context { display: none !important; } }
 .studio-location { display: grid; gap: 4px; }
 .studio-location > span { font: 500 10px/1.4 var(--studio-mono); letter-spacing: 1.9px; color: #657d6f; }
 .studio-location > strong { font-size: 14px; font-weight: 600; color: #294c42; }

@@ -152,7 +152,7 @@ function selectedSources(records,composer,{allowMissing=false}={}){
   return {records:found,state:normalizeHandoverState(composer)};
 }
 
-export function captureHandoverReference(records,composer,{id=uniqueId(),code='',note='',now=new Date().toISOString(),appVersion='0.7'}={}){
+export function captureHandoverReference(records,composer,{id=uniqueId(),code='',note='',now=new Date().toISOString(),appVersion='0.8'}={}){
   if(!validId(id)||!timestamp(now))throw new Error('รหัสหรือวันที่เก็บฉบับอ้างอิงไม่ถูกต้อง');
   const referenceCode=clean(code,CODE_LIMIT),description=clean(note,NOTE_LIMIT),version=clean(appVersion,30);
   if(!referenceCode||!description)throw new Error('กรุณาระบุรหัสฉบับและเหตุผลก่อนเก็บฉบับอ้างอิง');
@@ -181,7 +181,7 @@ const sourceComposer=bundle=>({schemaVersion:1,metadata:bundle.metadata,selected
 const MODEL_NOTICE='ผลทั้งสองฝั่งคำนวณใหม่ด้วยแบบจำลองรุ่นปัจจุบัน ฉบับอ้างอิงเก็บข้อมูลต้นทางและรุ่นแอปที่บันทึก ไม่ได้เก็บคำตอบจากเครื่องยนต์รุ่นเก่า';
 const REFERENCE_NOTICE='ผลสรุปคำนวณใหม่จากข้อมูลที่เก็บไว้ด้วยแบบจำลองรุ่นปัจจุบัน ฉบับอ้างอิงเก็บข้อมูลต้นทางและรุ่นแอปที่บันทึก ไม่ได้เก็บคำตอบจากเครื่องยนต์รุ่นเก่า';
 
-export function handoverReferenceModel(raw,definitions,{now=new Date().toISOString(),appVersion='0.7'}={}){
+export function handoverReferenceModel(raw,definitions,{now=new Date().toISOString(),appVersion='0.8'}={}){
   const entry=validateReference(raw);
   return {reference:referenceInfo(entry),model:buildHandover(sourceRecords(entry.bundle),definitions,sourceComposer(entry.bundle),{now}),currentAppVersion:clean(appVersion,30),warnings:[REFERENCE_NOTICE]};
 }
@@ -273,7 +273,7 @@ function metricChanges(oldRecord,newRecord,before,after,definition){
 }
 
 /** Match local record IDs only. Copy/import identity changes remain added/removed. */
-export function compareHandoverReference(raw,currentRecords,definitions,composer,{now=new Date().toISOString(),appVersion='0.7'}={}){
+export function compareHandoverReference(raw,currentRecords,definitions,composer,{now=new Date().toISOString(),appVersion='0.8'}={}){
   if(!timestamp(now))throw new Error('วันที่เปรียบเทียบไม่ถูกต้อง');
   const reference=validateReference(raw),selected=selectedSources(currentRecords,composer,{allowMissing:true});
   let currentSources=[];
