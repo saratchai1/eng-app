@@ -200,7 +200,7 @@ export function parseProjectBundle(raw) {
   return {format:FORMAT,schemaVersion:1,metadata,exportedAt:value.exportedAt,...(value.appVersion!==undefined?{appVersion:value.appVersion}:{}),records};
 }
 
-export function createProjectBundle(records,state,{now=new Date().toISOString(),appVersion='0.8'}={}) {
+export function createProjectBundle(records,state,{now=new Date().toISOString(),appVersion='0.9'}={}) {
   if(!validTimestamp(now))throw new Error('วันที่ส่งออกชุดเอกสารไม่ถูกต้อง');
   if(!Array.isArray(state?.selectedIds) || !state.selectedIds.length || state.selectedIds.length>MAX_HANDOVER_RECORDS || new Set(state.selectedIds).size!==state.selectedIds.length || !state.selectedIds.every(validId))throw new Error('เลือกงานที่ไม่ซ้ำกัน 1–30 งานก่อนส่งออก');
   const normalized=normalizeHandoverState(state),source=Array.isArray(records)?records:[];

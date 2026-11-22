@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { reviewSourceHash, parseReviewSourceHash, resolveReviewSource, preserveReviewSourceDraft } from '../src/review-source.js';
+import { reviewSourceHash, parseReviewSourceHash, resolveReviewSource, preserveReviewSourceDraft, normalizeReviewReturnContext, reviewCycleHash, parseReviewCycleHash } from '../src/review-source.js';
 
 test('review source links retain exact project and issue identity across special characters and reload', () => {
   const sourceId = 'โครงการ/A B?x=1#2%&', itemId = 'issue/A B?x=1', findingId = 'doc:A?B#C / review-1';
@@ -44,4 +44,40 @@ test('return-to-room persistence failure retains dirty source state and never re
   assert.equal(calls, 2);
   assert.equal(preserveReviewSourceDraft(false, () => { throw new Error('must not write clean data'); }), true);
   assert.equal(preserveReviewSourceDraft(true, () => true), true);
+});
+
+test('comparison source links retain exact reference and selected row independently from the current finding', () => {
+  const returnContext = Object.freeze({ view: 'review-cycle', referenceId: 'รอบ/A?B#1%', entryId: '["beam-A","model-check",1,"กำลังดัด"]' });
+  const hash = reviewSourceHash('beam-A', { section: 'results' }, '', returnContext);
+  const parsed = parseReviewSourceHash(hash);
+  assert.deepEqual(parsed, { sourceId: 'beam-A', target: { section: 'results' }, findingId: '', returnContext });
+  assert.notEqual(parsed.returnContext, returnContext);
+  const other = parseReviewSourceHash(reviewSourceHash('beam-A', { section: 'review', itemId: 'RV-001' }, 'same-finding', { ...returnContext, referenceId: 'next-reference' }));
+  assert.equal(other.returnContext.referenceId, 'next-reference');
+  assert.equal(other.returnContext.entryId, returnContext.entryId);
+});
+
+test('partial, repeated and external return destinations cannot change comparison context', () => {
+  for (const tail of ['return=review-cycle', 'reference=ref&entry=row', 'return=https://example.com&reference=ref&entry=row', 'return=review-cycle&reference=ref', 'return=review-cycle&reference=ref&entry=row&entry=another', 'return=review-cycle&reference=%0A&entry=row']) {
+    assert.throws(() => parseReviewSourceHash('#review-source/beam?section=review&' + tail), Error, tail);
+  }
+  assert.throws(() => normalizeReviewReturnContext({ view: 'review-cycle', referenceId: 'r', entryId: 'x'.repeat(2001) }));
+  assert.throws(() => normalizeReviewReturnContext([]));
+  assert.equal(normalizeReviewReturnContext(null), null);
+});
+
+test('reference routes round-trip special characters without selecting a different baseline', () => {
+  const id = 'ฉบับ A/B?kind=closed#1%';
+  assert.deepEqual(parseReviewCycleHash(reviewCycleHash(id)), { referenceId: id });
+  assert.deepEqual(parseReviewCycleHash('#review-cycle'), { referenceId: null });
+  assert.equal(reviewCycleHash(), '#review-cycle');
+  assert.equal(parseReviewCycleHash('#review-room'), null);
+  for (const hash of ['#review-cycle/', '#review-cycle/%E0%A4%A', '#review-cycle/%0A', '#review-cycle/' + 'a'.repeat(201)]) assert.throws(() => parseReviewCycleHash(hash));
+  assert.throws(() => reviewCycleHash(' '));
+});
+
+test('oversized encoded comparison links fail before producing an unparseable source URL', () => {
+  const back = { view: 'review-cycle', referenceId: 'r', entryId: 'ก'.repeat(2000) };
+  assert.throws(() => reviewSourceHash('beam', { section: 'results' }, 'ก'.repeat(1600), back), /ยาวเกิน/);
+  assert.throws(() => parseReviewSourceHash('#review-source/beam?' + 'x'.repeat(18000)), /ยาวเกิน/);
 });
